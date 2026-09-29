@@ -88,6 +88,14 @@ class App(tk.Tk):
         self.client_list.pack(fill="y", expand=True, padx=4, pady=4)
         self.client_list.bind("<<ListboxSelect>>", self.on_client_selected)
 
+        dates = ttk.LabelFrame(left, text="Dates (YYYYMMDD, optional)")
+        dates.pack(fill="x", padx=4, pady=4)
+        self.start_var, self.end_var = tk.StringVar(), tk.StringVar()
+        for row, (text, var) in enumerate((("From", self.start_var), ("To", self.end_var))):
+            ttk.Label(dates, text=text).grid(row=row, column=0, padx=4, pady=2, sticky="w")
+            ttk.Entry(dates, textvariable=var, width=10).grid(row=row, column=1, padx=4, pady=2)
+            var.trace_add("write", lambda *_: self.on_client_selected())
+
         right = ttk.LabelFrame(mid, text="Claims to enter")
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
         cols = ("date", "service", "hours", "cost")
@@ -171,7 +179,15 @@ class App(tk.Tk):
         if not sel:
             return
         self.clear_preview()
-        self.result = rc.read_client(self.ws, self.clients[sel[0]], self.date_columns)
+        try:
+            start, end = rc.parse_day(self.start_var.get()), rc.parse_day(self.end_var.get())
+        except ValueError as e:
+            self.problems.configure(text=str(e))
+            return
+        if start and end and start > end:
+            self.problems.configure(text="'From' is after 'To'.")
+            return
+        self.result = rc.read_client(self.ws, self.clients[sel[0]], self.date_columns, start, end)
         for c in self.result["claims"]:
             cost = "" if c["total_cost"] is None else f"{c['total_cost']:.2f}"
             self.table.insert("", "end", values=(c["service_date"], c["service"], f"{c['hours']:g}", cost))

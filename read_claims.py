@@ -24,6 +24,7 @@ Usage:
   python read_claims.py FILE.xlsx --client "John Doe"  # or by name
   python read_claims.py FILE.xlsx                      # menu; "exit" quits; asks for the URL after a client is picked
   python read_claims.py FILE.xlsx --client 1 --json out.json
+  python read_claims.py FILE.xlsx --start 20260810 --end 20260820   # only that date range
   python read_claims.py FILE.xlsx --url http://localhost:3000   # fill the form
   ... --url http://localhost:3000 --first-only   # enter just the first claim (testing)
 """
@@ -116,7 +117,22 @@ def to_money(value):
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def read_client(ws, client, date_columns):
+def parse_day(text):
+    """Turn YYYYMMDD (or YYYY-MM-DD) into a date; blank means no limit. Raises ValueError."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    digits = text.replace("-", "")
+    try:
+        if len(digits) != 8:  # strptime would accept short forms like 2026081
+            raise ValueError
+        return dt.datetime.strptime(digits, "%Y%m%d").date()
+    except ValueError:
+        raise ValueError(f"'{text}' is not a valid date. Use YYYYMMDD, e.g. 20260815.")
+
+
+def read_client(ws, client, date_columns, start=None, end=None):
+    """start/end are optional dates; only days inside that range (inclusive) are read."""
     rate = None
     service_rows = {}
     for row in ws.iter_rows(min_row=client["first_row"], max_row=client["last_row"]):
@@ -137,6 +153,8 @@ def read_client(ws, client, date_columns):
     claims = []
     for row, service in sorted(service_rows.items()):
         for col, day in date_columns:
+            if (start and day < start) or (end and day > end):
+                continue
             hours = ws.cell(row, col).value
             if hours in (None, "", 0):
                 continue
@@ -287,7 +305,7 @@ class Session:
 
 
 def process_client(ws, client, date_columns, args, session):
-    result = read_client(ws, client, date_columns)
+    result = read_client(ws, client, date_columns, args.start, args.end)
     print_result(result)
     if args.json:
         with open(args.json, "w") as f:
@@ -319,10 +337,18 @@ def main():
     parser.add_argument("--list", action="store_true", help="list the clients found and exit")
     parser.add_argument("--client", help="client number from --list, or client name")
     parser.add_argument("--json", metavar="FILE", help="also save the parsed claims as JSON (overwritten for each client)")
+    parser.add_argument("--start", metavar="YYYYMMDD", help="only entries on or after this date (default: all)")
+    parser.add_argument("--end", metavar="YYYYMMDD", help="only entries on or before this date (default: all)")
     parser.add_argument("--first-only", action="store_true",
                         help="make \"first claim only\" the default answer when entering claims (to test what the form does after Add claim)")
     parser.add_argument("--url", help="online claim form URL (if omitted, asked for after you pick a client)")
     args = parser.parse_args()
+    try:
+        args.start, args.end = parse_day(args.start), parse_day(args.end)
+    except ValueError as e:
+        parser.error(str(e))
+    if args.start and args.end and args.start > args.end:
+        parser.error("--start is after --end.")
 
     # data_only=True gives the values Excel last calculated instead of formula text.
     wb = openpyxl.load_workbook(args.workbook, data_only=True)
