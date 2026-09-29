@@ -1,3 +1,5 @@
 CLAUDE.md
 mock_data.xlsx
 image.png
+__pycache__/
+*.pyc

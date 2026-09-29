@@ -1,7 +1,8 @@
 name: Build ClaimFiller.exe
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*"]      # tagging a release builds it and publishes it
+  workflow_dispatch:  # "Run workflow" button in the Actions tab: test build, no release
 permissions:
   contents: write
 jobs:
@@ -14,8 +15,18 @@ jobs:
           python-version: "3.12"
       - run: pip install openpyxl playwright pyinstaller
       - run: pyinstaller --onefile --windowed --name ClaimFiller --collect-all playwright app.py
-      - uses: softprops/action-gh-release@v2
+      - name: Publish release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/ClaimFiller.exe
+            config.json
+      - name: Keep the exe as a download (manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaimFiller
+          path: |
             dist/ClaimFiller.exe
             config.json
