@@ -18,7 +18,7 @@ import read_claims as rc
 import updater
 from version import VERSION
 
-DEFAULT_URL = "http://localhost:3000"
+DEFAULT_URL = "https://mock-website-theta.vercel.app"  # used when config.json is missing
 
 
 def app_dir():
@@ -61,7 +61,8 @@ class App(tk.Tk):
         super().__init__()
         self.title(f"Claim Filler {VERSION}")
         self.geometry("820x600")
-        self.url = load_config().get("url") or DEFAULT_URL
+        self.config = load_config()
+        self.url_var = tk.StringVar(value=self.config.get("url") or DEFAULT_URL)
         self.ws = self.clients = self.date_columns = self.result = None
         self.filler = None
         self.worker = Worker()
@@ -109,6 +110,11 @@ class App(tk.Tk):
         self.summary.pack(anchor="w", padx=4)
         self.problems = tk.Label(right, text="", fg="#b00020", justify="left", wraplength=480, anchor="w")
         self.problems.pack(fill="x", padx=4)
+
+        site = ttk.Frame(self)
+        site.pack(fill="x", **pad)
+        ttk.Label(site, text="Claim website address:").pack(side="left")
+        ttk.Entry(site, textvariable=self.url_var).pack(side="left", fill="x", expand=True, padx=8)
 
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", **pad)
@@ -199,13 +205,23 @@ class App(tk.Tk):
         self.update_fill_button()
 
     def open_site(self):
-        if self.filler:
+        url = self.url_var.get().strip()
+        if not url:
+            messagebox.showerror("Claim website", "Paste the claim website address first.")
             return
+        if "://" not in url:
+            url = "https://" + url
+            self.url_var.set(url)
+        self.remember_url(url)
         self.open_btn.configure(state="disabled")
-        self.log(f"Opening {self.url} ...")
+        self.log(f"Opening {url} ...")
 
         def job():
-            filler = rc.FormFiller(self.url, log=self.log)
+            if self.filler:  # address may have changed: start over with a fresh window
+                self.filler.close()
+                self.filler = None
+                self.ui(self.update_fill_button)
+            filler = rc.FormFiller(url, log=self.log)
             try:
                 filler.open()
             except Exception as e:
@@ -213,10 +229,20 @@ class App(tk.Tk):
                 self.ui(lambda: self.open_btn.configure(state="normal"))
                 return
             self.filler = filler
+            self.ui(lambda: self.open_btn.configure(state="normal"))
             self.log("Website opened. Log in if needed and go to the Claim details form, then click 'Fill form'.")
             self.ui(self.update_fill_button)
 
         self.worker.submit(job)
+
+    def remember_url(self, url):
+        """Save the address in config.json so it is pre-filled next time (best effort)."""
+        self.config["url"] = url
+        try:
+            with open(os.path.join(app_dir(), "config.json"), "w") as f:
+                json.dump(self.config, f, indent=2)
+        except OSError:
+            pass
 
     def update_fill_button(self):
         ready = self.filler and self.result and self.result["claims"] and not self.result["problems"]
