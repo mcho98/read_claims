@@ -31,7 +31,10 @@ Usage:
 import argparse
 import datetime as dt
 import json
+import os
+import re
 import sys
+import time
 from decimal import Decimal, ROUND_HALF_UP
 
 import openpyxl
@@ -45,6 +48,8 @@ SERVICES = {
 CLIENT_LABEL = "client name"
 RATE_LABEL = "rate $/hr"
 MAX_HOURS_PER_DAY = 24
+CENT = Decimal("0.01")
+MAX_CLAIMS_PER_GROUP = 10  # the website accepts at most this many claims at a time
 EXIT_WORDS = {"exit", "quit", "q"}
 
 # How the form fields are found on the page (labels from the "Claim details" form).
@@ -53,16 +58,26 @@ FIELD_SERVICE = "Service"
 FIELD_HOURS = "Number of hours"
 FIELD_COST = "Total cost"
 BUTTON_ADD = "Add claim"
+BUTTON_PREDETERMINE = "Predetermine Claim"
+# How the website's running totals are read from the page text ("Total hours: 4.00", "Total cost: $136.12").
+TOTAL_HOURS_PATTERN = r"Total hours\s*:\s*([\d,]*\.?\d+)"
+TOTAL_COST_PATTERN = r"Total cost\s*:\s*\$?\s*([\d,]*\.?\d+)"
+TYPING_DELAY_MS = 30      # pause between keystrokes when typing hours/cost (config key typing_delay_ms)
+FIELD_TRIES = 3           # times a single form box is re-filled if what it holds is not what was typed
+MAX_ATTEMPTS = 3          # tries per claim before giving up for good
+TOTALS_WAIT_SECONDS = 5   # how long to wait for the website totals to update after Add claim
 
 
 def apply_config(config):
     """Let config.json override the form wording, so a site text change needs no rebuild."""
-    global FIELD_SERVICE_DATE, FIELD_SERVICE, FIELD_HOURS, FIELD_COST, BUTTON_ADD
+    global TYPING_DELAY_MS, FIELD_SERVICE_DATE, FIELD_SERVICE, FIELD_HOURS, FIELD_COST, BUTTON_ADD, BUTTON_PREDETERMINE
     FIELD_SERVICE_DATE = config.get("field_service_date", FIELD_SERVICE_DATE)
     FIELD_SERVICE = config.get("field_service", FIELD_SERVICE)
     FIELD_HOURS = config.get("field_hours", FIELD_HOURS)
     FIELD_COST = config.get("field_cost", FIELD_COST)
     BUTTON_ADD = config.get("button_add", BUTTON_ADD)
+    TYPING_DELAY_MS = config.get("typing_delay_ms", TYPING_DELAY_MS)
+    BUTTON_PREDETERMINE = config.get("button_predetermine", BUTTON_PREDETERMINE)
 
 
 def norm(value):
@@ -177,6 +192,17 @@ def read_client(ws, client, date_columns, start=None, end=None):
             "problems": problems, "warnings": warnings}
 
 
+def group_claims(claims, size=MAX_CLAIMS_PER_GROUP):
+    """Split claims into consecutive groups of at most `size` (15 -> 10 + 5)."""
+    return [claims[i:i + size] for i in range(0, len(claims), size)]
+
+
+def group_label(groups, n):
+    """Human text for group n (1-based), e.g. 'Group 2 of 2 (claims 11-15)'."""
+    start = sum(len(g) for g in groups[:n - 1]) + 1
+    return f"Group {n} of {len(groups)} (claims {start}-{start + len(groups[n - 1]) - 1})"
+
+
 def choose_client(clients, choice):
     """Return the matching client, or None if the choice is not usable."""
     if choice.isdigit() and 1 <= int(choice) <= len(clients):
@@ -223,6 +249,7 @@ class FormFiller:
         self.url = url
         self.log = log
         self.pw = self.browser = self.page = None
+        self.screenshot_dir = os.getcwd()  # where failure screenshots go (the app points this next to the program)
 
     def open(self):
         from playwright.sync_api import sync_playwright
@@ -233,25 +260,197 @@ class FormFiller:
             try:
                 self.browser = self.pw.chromium.launch(headless=False, channel=channel)
                 break
-            except Exception:
+            except Exception as e:
                 if channel is None:
                     self.close()
-                    raise
+                    raise RuntimeError("No browser found. Please install Google Chrome (or Microsoft Edge) "
+                                       f"and try again. ({str(e).splitlines()[0]})")
         self.page = self.browser.new_page()
+        self.page.set_default_timeout(10000)  # fail a stuck step quickly so the retry logic can react
         self.page.goto(self.url)
 
-    def fill(self, claims):
+    def save_screenshot(self, name):
+        """Keep a picture of the page when an attempt fails, to see what the form looked like."""
+        if not self.screenshot_dir:
+            return
+        try:
+            path = os.path.join(self.screenshot_dir, f"{name}.png")
+            self.page.screenshot(path=path)
+            self.log(f"    screenshot saved: {path}")
+        except Exception:
+            pass
+
+    def read_totals(self):
+        """The website's (total hours, total cost) as Decimals, or None if it shows no totals."""
+        text = self.page.inner_text("body")
+        hours = re.search(TOTAL_HOURS_PATTERN, text, re.I)
+        cost = re.search(TOTAL_COST_PATTERN, text, re.I)
+        if not (hours and cost):
+            return None
+        return (Decimal(hours.group(1).replace(",", "")).quantize(CENT),
+                Decimal(cost.group(1).replace(",", "")).quantize(CENT))
+
+    def wait_for_totals(self, expected):
+        """Poll until the website totals equal `expected` or the wait runs out; return the last totals seen."""
+        deadline = time.time() + TOTALS_WAIT_SECONDS
+        seen = self.read_totals()
+        while seen != expected and time.time() < deadline:
+            self.page.wait_for_timeout(250)
+            seen = self.read_totals()
+        return seen
+
+    # --- form boxes ----------------------------------------------------------
+    def boxes(self):
         page = self.page
+        return {
+            "date": page.get_by_label(FIELD_SERVICE_DATE),  # label reads "Service date (YYYY-MM-DD)"
+            "service": page.get_by_label(FIELD_SERVICE, exact=True),
+            "hours": page.get_by_label(FIELD_HOURS, exact=True),
+            "cost": page.get_by_label(FIELD_COST),  # label reads "Total cost ($)"
+        }
+
+    def values(self):
+        """What the four boxes hold right now (the Service box as its visible text)."""
+        b = self.boxes()
+        return {
+            "date": b["date"].input_value(),
+            "service": b["service"].evaluate("e => e.options[e.selectedIndex].text"),
+            "hours": b["hours"].input_value(),
+            "cost": b["cost"].input_value(),
+        }
+
+    def describe_boxes(self):
+        try:
+            v = self.values()
+            return f"form held date={v['date']!r} service={v['service']!r} hours={v['hours']!r} cost={v['cost']!r}"
+        except Exception as e:
+            return f"could not read the form ({str(e).splitlines()[0]})"
+
+    @staticmethod
+    def same(wanted, actual):
+        """Equal as numbers when both are numbers (so 4 and 4.00 match), else as trimmed text."""
+        try:
+            return Decimal(wanted) == Decimal(actual.replace(",", "").replace("$", "").strip())
+        except Exception:
+            return wanted.strip().lower() == actual.strip().lower()
+
+    def settle(self):
+        """Wait until the form has stopped changing, so a late reset from the previous add
+        can't land in the middle of typing the next claim."""
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=2000)
+        except Exception:
+            pass
+        last = None
+        for _ in range(12):  # at most ~3.6 s
+            now = self.values()
+            if now == last:
+                return
+            last = now
+            self.page.wait_for_timeout(300)
+
+    def set_box(self, name, text, typed):
+        """Put text in a box and check it stuck; re-fill up to FIELD_TRIES times. True if it holds the text."""
+        box = self.boxes()[name]
+        for _ in range(FIELD_TRIES):
+            if typed:
+                # Real keystrokes + Tab fire keydown/keyup/change/blur like a person typing.
+                box.fill("")
+                box.press_sequentially(text, delay=TYPING_DELAY_MS)
+                box.press("Tab")
+            else:
+                box.fill(text)
+                if name == "date":
+                    box.press("Escape")  # close the calendar picker if it opened
+            self.page.wait_for_timeout(100)
+            if self.same(text, self.values()[name]):
+                return True
+        return False
+
+    def enter_claim(self, c):
+        self.settle()
+        wanted = {"date": c["service_date"], "hours": f"{c['hours']:g}"}
+        if c["total_cost"] is not None:
+            wanted["cost"] = f"{c['total_cost']:.2f}"
+        if not self.set_box("date", wanted["date"], typed=False):
+            raise RuntimeError("the service date box would not keep its value")
+        self.select_service(c["service"])
+        for name in ("hours", "cost"):
+            if name in wanted and not self.set_box(name, wanted[name], typed=True):
+                raise RuntimeError(f"the {name} box would not keep its value")
+        # Last look before clicking: a late reset or re-render may have wiped something.
+        for _ in range(FIELD_TRIES):
+            now = self.values()
+            wrong = [n for n, w in wanted.items() if not self.same(w, now[n])]
+            if now["service"].strip().lower() != c["service"].strip().lower():
+                wrong.append("service")
+            if not wrong:
+                break
+            self.log(f"    form changed while filling ({self.describe_boxes()}); filling again")
+            for n in wrong:
+                if n == "service":
+                    self.select_service(c["service"])
+                else:
+                    self.set_box(n, wanted[n], typed=n in ("hours", "cost"))
+        else:
+            raise RuntimeError(f"form is not right and will not be submitted: {self.describe_boxes()}")
+        self.page.get_by_role("button", name=BUTTON_ADD).click()
+
+    def fill(self, claims, predetermine=True):
+        """Add each claim and check it landed by comparing the website's totals with a rolling sum.
+
+        A claim counts as added only when the website's total hours and total cost equal
+        (starting totals + everything added so far). Each claim gets MAX_ATTEMPTS tries; a
+        third failure stops the whole run. If the totals changed to something unexpected
+        (for example a duplicate), the run stops at once, because retrying could add more
+        wrong entries. When every claim is verified and predetermine is True, the
+        "Predetermine Claim" button is clicked.
+
+        Returns {"ok": bool, "added": n, "message": str}.
+        """
+        start = self.read_totals() or (Decimal("0.00"), Decimal("0.00"))
+        expected = start
+        self.log(f"  website totals before adding: {start[0]} hours, ${start[1]}")
         for i, c in enumerate(claims, 1):
-            date_box = page.get_by_label(FIELD_SERVICE_DATE)  # label reads "Service date (YYYY-MM-DD)"
-            date_box.fill(c["service_date"])
-            date_box.press("Escape")  # close the calendar picker if it opened
-            self.select_service(c["service"])
-            page.get_by_label(FIELD_HOURS, exact=True).fill(f"{c['hours']:g}")
-            if c["total_cost"] is not None:
-                page.get_by_label(FIELD_COST).fill(f"{c['total_cost']:.2f}")  # label reads "Total cost ($)"
-            page.get_by_role("button", name=BUTTON_ADD).click()
-            self.log(f"  added {i}/{len(claims)}: {c['service_date']} {c['service']} {c['hours']:g}h")
+            label = f"{c['service_date']} {c['service']} {c['hours']:g}h"
+            before = expected
+            expected = (expected[0] + Decimal(str(c["hours"])).quantize(CENT),
+                        expected[1] + Decimal(str(c["total_cost"] or 0)).quantize(CENT))
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                problem = None
+                try:
+                    self.enter_claim(c)
+                except Exception as e:
+                    problem = f"could not use the form ({str(e).splitlines()[0]})"
+                seen = self.wait_for_totals(expected)
+                if seen == expected:
+                    self.log(f"  added {i}/{len(claims)}: {label}  (website now {seen[0]} hours, ${seen[1]})")
+                    break
+                if seen is not None and seen != before:
+                    msg = (f"Stopped at claim {i} ({label}): the website shows {seen[0]} hours / ${seen[1]} "
+                           f"but {expected[0]} hours / ${expected[1]} was expected. Check the website before continuing.")
+                    self.log(msg)
+                    return {"ok": False, "added": i - 1, "message": msg}
+                self.log(f"  claim {i} ({label}) attempt {attempt}/{MAX_ATTEMPTS} failed: "
+                         f"{problem or 'the website totals did not change'}; {self.describe_boxes()}")
+                self.save_screenshot(f"failed-claim-{i}-attempt-{attempt}")
+            else:
+                msg = f"Stopped: claim {i} ({label}) failed {MAX_ATTEMPTS} times. {i - 1} of {len(claims)} claims were added."
+                self.log(msg)
+                return {"ok": False, "added": i - 1, "message": msg}
+        msg = f"All {len(claims)} claims added; totals match ({expected[0]} hours, ${expected[1]})."
+        if not predetermine:
+            self.log("  " + msg)
+        else:
+            try:
+                self.page.get_by_role("button", name=BUTTON_PREDETERMINE).click()
+            except Exception as e:
+                msg += f" But the '{BUTTON_PREDETERMINE}' button could not be clicked: {str(e).splitlines()[0]}"
+                self.log("  " + msg)
+                return {"ok": False, "added": len(claims), "message": msg}
+            msg += f" Clicked '{BUTTON_PREDETERMINE}'."
+            self.log("  " + msg)
+        return {"ok": True, "added": len(claims), "message": msg}
 
     def select_service(self, service):
         dropdown = self.page.get_by_label(FIELD_SERVICE, exact=True)
@@ -319,15 +518,36 @@ def process_client(ws, client, date_columns, args, session):
     filler = session.get_filler()
     if not filler:
         return  # no URL: back to the client menu
+    groups = group_claims(result["claims"])
     default = "f" if args.first_only else "a"
-    n = len(result["claims"])
-    answer = input(f"Enter [a]ll {n} claims, [f]irst only, or [b]ack to the client list? [{default}] ").strip().lower() or default
-    if answer in ("a", "f"):
-        claims = result["claims"][:1] if answer == "f" else result["claims"]
-        try:
-            filler.fill(claims)
-        except Exception as e:  # keep the menu alive so the other clients aren't lost
-            print(f"Form filling stopped: {e}")
+    while True:
+        if len(groups) > 1:
+            print(f"The website takes {MAX_CLAIMS_PER_GROUP} claims at a time, so these are split into groups:")
+            for n in range(1, len(groups) + 1):
+                print(f"  {n}. {group_label(groups, n)}")
+            pick = input(f"Which group? [1-{len(groups)}, Enter = 1, b = back to the client list] ").strip().lower() or "1"
+            if pick in ("b", "back"):
+                return
+            if not (pick.isdigit() and 1 <= int(pick) <= len(groups)):
+                print("Please type one of the group numbers.")
+                continue
+            group = groups[int(pick) - 1]
+        else:
+            group = groups[0]
+        answer = input(f"Enter [a]ll {len(group)} claims (then click '{BUTTON_PREDETERMINE}'), "
+                       f"[f]irst only (test, no '{BUTTON_PREDETERMINE}'), or [b]ack? [{default}] ").strip().lower() or default
+        if answer in ("a", "f"):
+            claims = group[:1] if answer == "f" else group
+            try:
+                outcome = filler.fill(claims, predetermine=(answer == "a"))
+            except Exception as e:  # keep the menu alive so the other clients aren't lost
+                print(f"Form filling stopped: {e}")
+                return
+            print(outcome["message"])
+            if not outcome["ok"]:
+                return  # a failed add stops everything for this client
+        if len(groups) == 1:
+            return  # with several groups we loop so the next group can be chosen
 
 
 def main():

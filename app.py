@@ -15,15 +15,20 @@ from tkinter import filedialog, messagebox, ttk
 import openpyxl
 
 import read_claims as rc
-import updater
 from version import VERSION
 
 DEFAULT_URL = "https://mock-website-theta.vercel.app"  # used when config.json is missing
 
 
 def app_dir():
-    # Next to the .exe when packaged, next to this file otherwise.
-    return os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+    """Folder holding config.json: next to the .exe (Windows), next to the .app (Mac),
+    or next to this file when run from source."""
+    if not getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(__file__))
+    folder = os.path.dirname(sys.executable)
+    if sys.platform == "darwin" and ".app/Contents/MacOS" in folder:
+        folder = os.path.dirname(os.path.dirname(os.path.dirname(folder)))  # MacOS -> Contents -> .app -> its folder
+    return folder
 
 
 def load_config():
@@ -69,7 +74,6 @@ class App(tk.Tk):
         self.messages = queue.Queue()
         self.build_ui()
         self.after(100, self.drain_messages)
-        self.after(1500, lambda: self.check_updates(False))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def build_ui(self):
@@ -79,7 +83,6 @@ class App(tk.Tk):
         ttk.Button(top, text="1. Choose Excel file...", command=self.choose_file).pack(side="left")
         self.file_label = ttk.Label(top, text="No file chosen")
         self.file_label.pack(side="left", padx=8)
-        ttk.Button(top, text="Check for updates", command=lambda: self.check_updates(True)).pack(side="right")
 
         mid = ttk.Frame(self)
         mid.pack(fill="both", expand=True, **pad)
@@ -99,13 +102,23 @@ class App(tk.Tk):
 
         right = ttk.LabelFrame(mid, text="Claims to enter")
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
-        cols = ("date", "service", "hours", "cost")
+        self.client_title = ttk.Label(right, text="No client selected", font=("TkDefaultFont", 20, "bold"))
+        self.client_title.pack(anchor="w", padx=4, pady=(4, 0))
+        cols = ("group", "date", "service", "hours", "cost")
         self.table = ttk.Treeview(right, columns=cols, show="headings", height=10)
-        for col, text, width in (("date", "Service date", 100), ("service", "Service", 110),
+        for col, text, width in (("group", "Group", 55), ("date", "Service date", 100), ("service", "Service", 110),
                                  ("hours", "Hours", 60), ("cost", "Total cost ($)", 100)):
             self.table.heading(col, text=text)
             self.table.column(col, width=width, anchor="w" if col in ("date", "service") else "e")
         self.table.pack(fill="both", expand=True, padx=4, pady=4)
+        grp = ttk.Frame(right)
+        grp.pack(fill="x", padx=4)
+        ttk.Label(grp, text="Group to fill (website takes 10 at a time):").pack(side="left")
+        self.group_var = tk.StringVar()
+        self.group_box = ttk.Combobox(grp, textvariable=self.group_var, state="disabled", width=30)
+        self.group_box.pack(side="left", padx=6)
+        self.group_box.bind("<<ComboboxSelected>>", lambda _e: self.on_group_selected())
+        self.groups = []
         self.summary = ttk.Label(right, text="")
         self.summary.pack(anchor="w", padx=4)
         self.problems = tk.Label(right, text="", fg="#b00020", justify="left", wraplength=480, anchor="w")
@@ -168,6 +181,7 @@ class App(tk.Tk):
         self.ws, self.clients, self.date_columns = ws, clients, date_columns
         self.file_label.configure(text=os.path.basename(path))
         self.client_list.delete(0, "end")
+        self.client_title.configure(text="No client selected")
         for c in clients:
             self.client_list.insert("end", c["name"])
         self.clear_preview()
@@ -175,6 +189,9 @@ class App(tk.Tk):
 
     def clear_preview(self):
         self.result = None
+        self.groups = []
+        self.group_var.set("")
+        self.group_box.configure(state="disabled", values=())
         self.table.delete(*self.table.get_children())
         self.summary.configure(text="")
         self.problems.configure(text="")
@@ -185,6 +202,7 @@ class App(tk.Tk):
         if not sel:
             return
         self.clear_preview()
+        self.client_title.configure(text=f"{sel[0] + 1}. {self.clients[sel[0]]['name']}")
         try:
             start, end = rc.parse_day(self.start_var.get()), rc.parse_day(self.end_var.get())
         except ValueError as e:
@@ -194,9 +212,15 @@ class App(tk.Tk):
             self.problems.configure(text="'From' is after 'To'.")
             return
         self.result = rc.read_client(self.ws, self.clients[sel[0]], self.date_columns, start, end)
-        for c in self.result["claims"]:
-            cost = "" if c["total_cost"] is None else f"{c['total_cost']:.2f}"
-            self.table.insert("", "end", values=(c["service_date"], c["service"], f"{c['hours']:g}", cost))
+        self.groups = rc.group_claims(self.result["claims"])
+        for n, group in enumerate(self.groups, 1):
+            for c in group:
+                cost = "" if c["total_cost"] is None else f"{c['total_cost']:.2f}"
+                self.table.insert("", "end", values=(n, c["service_date"], c["service"], f"{c['hours']:g}", cost))
+        if self.groups:
+            labels = [rc.group_label(self.groups, n) for n in range(1, len(self.groups) + 1)]
+            self.group_box.configure(values=labels, state="readonly" if len(labels) > 1 else "disabled")
+            self.group_var.set(labels[0])
         hours = sum(c["hours"] for c in self.result["claims"])
         cost = sum(c["total_cost"] or 0 for c in self.result["claims"])
         self.summary.configure(text=f"{len(self.result['claims'])} claims, {hours:g} hours, ${cost:,.2f}   "
@@ -222,6 +246,7 @@ class App(tk.Tk):
                 self.filler = None
                 self.ui(self.update_fill_button)
             filler = rc.FormFiller(url, log=self.log)
+            filler.screenshot_dir = app_dir()
             try:
                 filler.open()
             except Exception as e:
@@ -234,6 +259,16 @@ class App(tk.Tk):
             self.ui(self.update_fill_button)
 
         self.worker.submit(job)
+
+    def on_group_selected(self):
+        self.update_fill_button()
+
+    def selected_group(self):
+        """The claims of the group chosen in the drop-down (the only group if there is one)."""
+        labels = list(self.group_box.cget("values"))
+        if not self.groups or self.group_var.get() not in labels:
+            return []
+        return self.groups[labels.index(self.group_var.get())]
 
     def remember_url(self, url):
         """Save the address in config.json so it is pre-filled next time (best effort)."""
@@ -249,57 +284,29 @@ class App(tk.Tk):
         self.fill_btn.configure(state="normal" if ready else "disabled")
 
     def fill_form(self):
-        claims = self.result["claims"][:1] if self.first_only.get() else self.result["claims"]
+        group = self.selected_group()
+        test_only = self.first_only.get()
+        claims = group[:1] if test_only else group
+        which = f" ({self.group_var.get().split(' (')[0]})" if len(self.groups) > 1 else ""
         if not messagebox.askyesno("Fill form",
-                                   f"Enter {len(claims)} claim(s) for {self.result['client']}?\n\n"
-                                   "Check that the browser is showing the Claim details form."):
+                                   f"Enter {len(claims)} claim(s) for {self.result['client']}{which}?\n\n"
+                                   + ("This is a test, so 'Predetermine Claim' will NOT be clicked.\n\n" if test_only else
+                                      "When every claim is added and the totals match, 'Predetermine Claim' will be clicked.\n\n")
+                                   + "Check that the browser is showing the Claim details form."):
             return
         self.fill_btn.configure(state="disabled")
 
         def job():
             try:
-                self.filler.fill(claims)
-                self.log(f"Done: {len(claims)} claim(s) entered for {self.result['client']}. "
-                         "Pick another client or close this window.")
+                outcome = self.filler.fill(claims, predetermine=not test_only)
+                if outcome["ok"]:
+                    self.log(f"Done for {self.result['client']}. Pick another group or client, or close this window.")
+                else:
+                    self.log("STOPPED. " + outcome["message"])
             except Exception as e:
                 self.log(f"Stopped: {e}")
             self.ui(self.update_fill_button)
 
-        self.worker.submit(job)
-
-    def check_updates(self, manual):
-        """Look for a newer release on a background thread; ask before installing."""
-        def job():
-            try:
-                found = updater.check()
-            except Exception as e:
-                if manual:
-                    self.ui(lambda: messagebox.showinfo("Updates", f"Could not check for updates.\n({e})"))
-                return
-            if not found:
-                if manual:
-                    self.ui(lambda: messagebox.showinfo("Updates", f"You have the latest version ({VERSION})."))
-                return
-            version, url = found
-            self.ui(lambda: self.offer_update(version, url))
-        self.worker.submit(job)
-
-    def offer_update(self, version, url):
-        if not messagebox.askyesno("Update available",
-                                   f"Version {version} is available (you have {VERSION}).\n"
-                                   "Update now? The program will restart."):
-            return
-        self.log(f"Downloading {version} ...")
-
-        def job():
-            try:
-                updater.download_and_swap(url)
-            except Exception as e:
-                self.log(f"Update failed: {e}")
-                return
-            if self.filler:
-                self.filler.close()
-            self.ui(self.destroy)
         self.worker.submit(job)
 
     def on_close(self):
