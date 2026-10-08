@@ -33,8 +33,12 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
+import socket
+import subprocess
 import sys
 import time
+import urllib.request
 from decimal import Decimal, ROUND_HALF_UP
 
 import openpyxl
@@ -240,6 +244,39 @@ def print_result(result):
         print("PROBLEM:", p)
 
 
+def find_chrome():
+    """Path of the installed Google Chrome, or a RuntimeError telling the user to install it."""
+    if sys.platform == "darwin":
+        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                      os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
+    elif sys.platform.startswith("win"):
+        candidates = [os.path.join(os.environ.get(var, ""), "Google", "Chrome", "Application", "chrome.exe")
+                      for var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+    else:
+        candidates = [shutil.which(n) or "" for n in ("google-chrome", "google-chrome-stable", "chrome")]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    raise RuntimeError("Google Chrome was not found. Please install Google Chrome and try again.")
+
+
+def profile_dir():
+    """Where this program keeps its own Chrome profile (logins, passed security checks)."""
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    elif sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        base = os.path.expanduser("~/.local/share")
+    return os.path.join(base, "ClaimFiller", "chrome-profile")
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class FormFiller:
     """Drives one browser window for the whole session, so the login is kept
     while you move from client to client. Call open() first, let the user log in
@@ -248,26 +285,52 @@ class FormFiller:
     def __init__(self, url, log=print):
         self.url = url
         self.log = log
-        self.pw = self.browser = self.page = None
+        self.pw = self.browser = self.page = self.chrome_proc = None
+        self.port = None
         self.screenshot_dir = os.getcwd()  # where failure screenshots go (the app points this next to the program)
 
     def open(self):
+        """Start the user's own Google Chrome on the form address, with no automation attached.
+
+        Chrome is started like a normal browser (just with a debugging port open), so
+        Cloudflare-style checks see an ordinary visit and the person can pass them and
+        log in by hand. The script only connects to the window later, in attach(),
+        once fill() is called. A separate profile folder is kept between runs, so
+        logins and passed checks are usually remembered.
+        """
+        chrome = find_chrome()
+        self.port = free_port()
+        os.makedirs(profile_dir(), exist_ok=True)
+        self.chrome_proc = subprocess.Popen(
+            [chrome, f"--remote-debugging-port={self.port}", f"--user-data-dir={profile_dir()}",
+             "--no-first-run", "--no-default-browser-check", self.url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def attach(self):
+        """Connect Playwright to the running Chrome and pick the tab showing the claim form."""
+        if self.page:
+            return
         from playwright.sync_api import sync_playwright
-        self.pw = sync_playwright().start()
-        # Prefer the Edge/Chrome already installed (no browser download needed);
-        # fall back to Playwright's own Chromium if neither is present.
-        for channel in ("msedge", "chrome", None):
+        endpoint = f"http://127.0.0.1:{self.port}"
+        deadline = time.time() + 15
+        while True:
             try:
-                self.browser = self.pw.chromium.launch(headless=False, channel=channel)
+                urllib.request.urlopen(endpoint + "/json/version", timeout=1).close()
                 break
-            except Exception as e:
-                if channel is None:
-                    self.close()
-                    raise RuntimeError("No browser found. Please install Google Chrome (or Microsoft Edge) "
-                                       f"and try again. ({str(e).splitlines()[0]})")
-        self.page = self.browser.new_page()
+            except Exception:
+                if self.chrome_proc.poll() is not None or time.time() > deadline:
+                    raise RuntimeError(
+                        "Could not connect to Chrome. Close any Chrome window opened by this program "
+                        "(and any other window using the Claim Filler profile), then open the website again.")
+                time.sleep(0.3)
+        self.pw = sync_playwright().start()
+        self.browser = self.pw.chromium.connect_over_cdp(endpoint)
+        pages = [p for c in self.browser.contexts for p in c.pages]
+        if not pages:
+            raise RuntimeError("Chrome has no open tab.")
+        # Use the tab that has the form; otherwise the last tab (the one most recently opened).
+        self.page = next((p for p in pages if p.get_by_role("button", name=BUTTON_ADD).count()), pages[-1])
         self.page.set_default_timeout(10000)  # fail a stuck step quickly so the retry logic can react
-        self.page.goto(self.url)
 
     def save_screenshot(self, name):
         """Keep a picture of the page when an attempt fails, to see what the form looked like."""
@@ -408,6 +471,7 @@ class FormFiller:
 
         Returns {"ok": bool, "added": n, "message": str}.
         """
+        self.attach()
         start = self.read_totals() or (Decimal("0.00"), Decimal("0.00"))
         expected = start
         self.log(f"  website totals before adding: {start[0]} hours, ${start[1]}")
@@ -463,11 +527,15 @@ class FormFiller:
         raise RuntimeError(f"Service '{service}' is not in the dropdown (options: {options}).")
 
     def close(self):
-        if self.browser:
-            self.browser.close()
-        if self.pw:
-            self.pw.stop()
-        self.pw = self.browser = self.page = None
+        """Disconnect and close the Chrome window this program opened."""
+        try:
+            if self.pw:
+                self.pw.stop()
+        except Exception:
+            pass
+        if self.chrome_proc and self.chrome_proc.poll() is None:
+            self.chrome_proc.terminate()
+        self.pw = self.browser = self.page = self.chrome_proc = None
 
 
 class Session:

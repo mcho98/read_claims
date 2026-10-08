@@ -255,7 +255,7 @@ class App(tk.Tk):
                 return
             self.filler = filler
             self.ui(lambda: self.open_btn.configure(state="normal"))
-            self.log("Website opened. Log in if needed and go to the Claim details form, then click 'Fill form'.")
+            self.log("Chrome opened. Pass any security check, log in, and go to the Claim details form, then click 'Fill form'.")
             self.ui(self.update_fill_button)
 
         self.worker.submit(job)

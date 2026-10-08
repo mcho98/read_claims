@@ -10,7 +10,7 @@ Always the newest version (no account needed):
 - **Mac (Apple Silicon):** [ClaimFiller-mac.zip](https://github.com/mcho98/read_claims/releases/latest/download/ClaimFiller-mac.zip) — unzip; put `config.json` (above) in the same folder as `ClaimFiller.app`.
 - All versions: [Releases page](https://github.com/mcho98/read_claims/releases)
 
-A browser is needed: Microsoft Edge or Google Chrome (Windows), Google Chrome (Mac).
+**Google Chrome must be installed** (Windows and Mac). The program opens its own Chrome window; pass any website security check and log in there yourself, then click Fill form. Logins are remembered between runs.
 
 ## First run
 
