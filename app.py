@@ -246,7 +246,7 @@ class App(tk.Tk):
                 self.filler = None
                 self.ui(self.update_fill_button)
             filler = rc.FormFiller(url, log=self.log)
-            filler.screenshot_dir = app_dir()
+            filler.screenshot_dir = os.path.join(app_dir(), "output")
             try:
                 filler.open()
             except Exception as e:
@@ -290,8 +290,8 @@ class App(tk.Tk):
         which = f" ({self.group_var.get().split(' (')[0]})" if len(self.groups) > 1 else ""
         if not messagebox.askyesno("Fill form",
                                    f"Enter {len(claims)} claim(s) for {self.result['client']}{which}?\n\n"
-                                   + ("This is a test, so 'Predetermine Claim' will NOT be clicked.\n\n" if test_only else
-                                      "When every claim is added and the totals match, 'Predetermine Claim' will be clicked.\n\n")
+                                   + ("This is a test, so 'Predetermine' will NOT be clicked.\n\n" if test_only else
+                                      "When every claim is added and the totals match, 'Predetermine' will be clicked.\n\n")
                                    + "Check that the browser is showing the Claim details form."):
             return
         self.fill_btn.configure(state="disabled")

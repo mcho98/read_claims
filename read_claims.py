@@ -62,10 +62,10 @@ FIELD_SERVICE = "Service"
 FIELD_HOURS = "Number of hours"
 FIELD_COST = "Total cost"
 BUTTON_ADD = "Add claim"
-BUTTON_PREDETERMINE = "Predetermine Claim"
-# How the website's running totals are read from the page text ("Total hours: 4.00", "Total cost: $136.12").
-TOTAL_HOURS_PATTERN = r"Total hours\s*:\s*([\d,]*\.?\d+)"
-TOTAL_COST_PATTERN = r"Total cost\s*:\s*\$?\s*([\d,]*\.?\d+)"
+BUTTON_PREDETERMINE = "Predetermine"
+# The real site shows only a running total cost: a bare "$416.26" in the last row of the claims
+# table (no "Total cost:" label, no total hours). The mock/older wording "Total cost: $136.12" also works.
+TOTAL_COST_PATTERNS = [r"Total cost\s*:\s*\$\s*([\d,]*\.?\d+)", r"(?m)^[ \t]*\$\s*([\d,]*\.?\d+)[ \t]*$"]
 TYPING_DELAY_MS = 30      # pause between keystrokes when typing hours/cost (config key typing_delay_ms)
 FIELD_TRIES = 3           # times a single form box is re-filled if what it holds is not what was typed
 MAX_ATTEMPTS = 3          # tries per claim before giving up for good
@@ -287,7 +287,7 @@ class FormFiller:
         self.log = log
         self.pw = self.browser = self.page = self.chrome_proc = None
         self.port = None
-        self.screenshot_dir = os.getcwd()  # where failure screenshots go (the app points this next to the program)
+        self.screenshot_dir = os.path.join(os.getcwd(), "output")  # failure screenshots go in an "output" folder (the app puts it next to the program)
 
     def open(self):
         """Start the user's own Google Chrome on the form address, with no automation attached.
@@ -337,6 +337,7 @@ class FormFiller:
         if not self.screenshot_dir:
             return
         try:
+            os.makedirs(self.screenshot_dir, exist_ok=True)
             path = os.path.join(self.screenshot_dir, f"{name}.png")
             self.page.screenshot(path=path)
             self.log(f"    screenshot saved: {path}")
@@ -344,14 +345,14 @@ class FormFiller:
             pass
 
     def read_totals(self):
-        """The website's (total hours, total cost) as Decimals, or None if it shows no totals."""
+        """The website's running total cost as a Decimal (the last matching total on the page),
+        or None if no total is shown (e.g. the claims table is still empty)."""
         text = self.page.inner_text("body")
-        hours = re.search(TOTAL_HOURS_PATTERN, text, re.I)
-        cost = re.search(TOTAL_COST_PATTERN, text, re.I)
-        if not (hours and cost):
-            return None
-        return (Decimal(hours.group(1).replace(",", "")).quantize(CENT),
-                Decimal(cost.group(1).replace(",", "")).quantize(CENT))
+        for pattern in TOTAL_COST_PATTERNS:
+            found = re.findall(pattern, text, re.I)
+            if found:
+                return Decimal(found[-1].replace(",", "")).quantize(CENT)
+        return None
 
     def wait_for_totals(self, expected):
         """Poll until the website totals equal `expected` or the wait runs out; return the last totals seen."""
@@ -458,28 +459,33 @@ class FormFiller:
         else:
             raise RuntimeError(f"form is not right and will not be submitted: {self.describe_boxes()}")
         self.page.get_by_role("button", name=BUTTON_ADD).click()
+        # The site may show "Verifying..." in place of the button while it checks the claim.
+        self.page.wait_for_timeout(300)
+        try:
+            self.page.get_by_role("button", name=BUTTON_ADD).wait_for(timeout=TOTALS_WAIT_SECONDS * 1000)
+        except Exception:
+            pass
 
     def fill(self, claims, predetermine=True):
         """Add each claim and check it landed by comparing the website's totals with a rolling sum.
 
-        A claim counts as added only when the website's total hours and total cost equal
+        A claim counts as added only when the website's total cost equals
         (starting totals + everything added so far). Each claim gets MAX_ATTEMPTS tries; a
         third failure stops the whole run. If the totals changed to something unexpected
         (for example a duplicate), the run stops at once, because retrying could add more
         wrong entries. When every claim is verified and predetermine is True, the
-        "Predetermine Claim" button is clicked.
+        "Predetermine" button is clicked.
 
         Returns {"ok": bool, "added": n, "message": str}.
         """
         self.attach()
-        start = self.read_totals() or (Decimal("0.00"), Decimal("0.00"))
+        start = self.read_totals() or Decimal("0.00")
         expected = start
-        self.log(f"  website totals before adding: {start[0]} hours, ${start[1]}")
+        self.log(f"  website total cost before adding: ${start}")
         for i, c in enumerate(claims, 1):
             label = f"{c['service_date']} {c['service']} {c['hours']:g}h"
             before = expected
-            expected = (expected[0] + Decimal(str(c["hours"])).quantize(CENT),
-                        expected[1] + Decimal(str(c["total_cost"] or 0)).quantize(CENT))
+            expected = expected + Decimal(str(c["total_cost"] or 0)).quantize(CENT)
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 problem = None
                 try:
@@ -488,11 +494,11 @@ class FormFiller:
                     problem = f"could not use the form ({str(e).splitlines()[0]})"
                 seen = self.wait_for_totals(expected)
                 if seen == expected:
-                    self.log(f"  added {i}/{len(claims)}: {label}  (website now {seen[0]} hours, ${seen[1]})")
+                    self.log(f"  added {i}/{len(claims)}: {label}  (website total now ${seen})")
                     break
                 if seen is not None and seen != before:
-                    msg = (f"Stopped at claim {i} ({label}): the website shows {seen[0]} hours / ${seen[1]} "
-                           f"but {expected[0]} hours / ${expected[1]} was expected. Check the website before continuing.")
+                    msg = (f"Stopped at claim {i} ({label}): the website total is ${seen} "
+                           f"but ${expected} was expected. Check the website before continuing.")
                     self.log(msg)
                     return {"ok": False, "added": i - 1, "message": msg}
                 self.log(f"  claim {i} ({label}) attempt {attempt}/{MAX_ATTEMPTS} failed: "
@@ -502,7 +508,7 @@ class FormFiller:
                 msg = f"Stopped: claim {i} ({label}) failed {MAX_ATTEMPTS} times. {i - 1} of {len(claims)} claims were added."
                 self.log(msg)
                 return {"ok": False, "added": i - 1, "message": msg}
-        msg = f"All {len(claims)} claims added; totals match ({expected[0]} hours, ${expected[1]})."
+        msg = f"All {len(claims)} claims added; total cost matches (${expected})."
         if not predetermine:
             self.log("  " + msg)
         else:
