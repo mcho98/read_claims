@@ -1,6 +1,10 @@
 CLAUDE.md
-mock_data.xlsx
+shared/mock_data.xlsx
 image.png
 __pycache__/
 *.pyc
-/output/
+/python-app/output/
+/python-app/build/
+/python-app/dist/
+*.spec
+/extension/node_modules/

@@ -1,5 +1,7 @@
 #!/bin/sh
 # Build ClaimFiller.app on a Mac (needs Python once, on the build machine only).
+# Works from any folder: it always builds inside python-app (the folder this file is in).
+cd "$(dirname "$0")" || exit 1
 pip install openpyxl playwright pyinstaller || exit 1
 pyinstaller --windowed --name ClaimFiller --collect-all playwright app.py || exit 1
 ditto -c -k --keepParent dist/ClaimFiller.app dist/ClaimFiller-mac.zip

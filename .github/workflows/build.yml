@@ -21,23 +21,25 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install openpyxl playwright pyinstaller
+        working-directory: python-app
       - run: pyinstaller --onefile --windowed --name ClaimFiller --collect-all playwright app.py
+        working-directory: python-app
       - name: Publish to the release page
         if: env.TAG != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
           files: |
-            dist/ClaimFiller.exe
-            config.json
+            python-app/dist/ClaimFiller.exe
+            python-app/config.json
       - name: Keep as a download on this run (test builds)
         if: env.TAG == ''
         uses: actions/upload-artifact@v4
         with:
           name: ClaimFiller-windows
           path: |
-            dist/ClaimFiller.exe
-            config.json
+            python-app/dist/ClaimFiller.exe
+            python-app/config.json
 
   mac:
     needs: windows   # run after the Windows job so both don't create the same release at once
@@ -48,18 +50,21 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install openpyxl playwright pyinstaller
+        working-directory: python-app
       # --windowed on macOS produces ClaimFiller.app; zip it with ditto to keep it launchable.
       - run: pyinstaller --windowed --name ClaimFiller --collect-all playwright app.py
+        working-directory: python-app
       - run: ditto -c -k --keepParent dist/ClaimFiller.app dist/ClaimFiller-mac.zip
+        working-directory: python-app
       - name: Publish to the release page
         if: env.TAG != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          files: dist/ClaimFiller-mac.zip
+          files: python-app/dist/ClaimFiller-mac.zip
       - name: Keep as a download on this run (test builds)
         if: env.TAG == ''
         uses: actions/upload-artifact@v4
         with:
           name: ClaimFiller-mac
-          path: dist/ClaimFiller-mac.zip
+          path: python-app/dist/ClaimFiller-mac.zip
