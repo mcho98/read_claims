@@ -69,6 +69,8 @@ class App(tk.Tk):
         self.config = load_config()
         self.url_var = tk.StringVar(value=self.config.get("url") or DEFAULT_URL)
         self.ws = self.clients = self.date_columns = self.result = None
+        self.source_path = None
+        self.range = (None, None)
         self.filler = None
         self.worker = Worker()
         self.messages = queue.Queue()
@@ -135,6 +137,8 @@ class App(tk.Tk):
         self.open_btn.pack(side="left")
         self.fill_btn = ttk.Button(bottom, text="4. Fill form", command=self.fill_form, state="disabled")
         self.fill_btn.pack(side="left", padx=8)
+        self.export_btn = ttk.Button(bottom, text="Export JSON...", command=self.export_json, state="disabled")
+        self.export_btn.pack(side="left", padx=8)
         self.first_only = tk.BooleanVar(value=False)
         ttk.Checkbutton(bottom, text="Test: only the first claim", variable=self.first_only).pack(side="left", padx=8)
 
@@ -179,6 +183,7 @@ class App(tk.Tk):
             messagebox.showerror("Could not read the file", str(e))
             return
         self.ws, self.clients, self.date_columns = ws, clients, date_columns
+        self.source_path = path
         self.file_label.configure(text=os.path.basename(path))
         self.client_list.delete(0, "end")
         self.client_title.configure(text="No client selected")
@@ -211,6 +216,7 @@ class App(tk.Tk):
         if start and end and start > end:
             self.problems.configure(text="'From' is after 'To'.")
             return
+        self.range = (start, end)
         self.result = rc.read_client(self.ws, self.clients[sel[0]], self.date_columns, start, end)
         self.groups = rc.group_claims(self.result["claims"])
         for n, group in enumerate(self.groups, 1):
@@ -282,6 +288,25 @@ class App(tk.Tk):
     def update_fill_button(self):
         ready = self.filler and self.result and self.result["claims"] and not self.result["problems"]
         self.fill_btn.configure(state="normal" if ready else "disabled")
+        exportable = self.result and self.result["claims"] and not self.result["problems"]
+        self.export_btn.configure(state="normal" if exportable else "disabled")
+
+    def export_json(self):
+        """Save the chosen client's claims (after the date range, split into groups) for the extension."""
+        start, end = self.range
+        path = filedialog.asksaveasfilename(
+            title="Save claims for the extension", defaultextension=".json",
+            initialfile=rc.export_filename(self.result["client"], start, end),
+            filetypes=[("JSON files", "*.json")])
+        if not path:
+            return
+        try:
+            rc.write_export(path, rc.build_export(self.result, self.groups, start, end,
+                                                  self.source_path, self.ws.title))
+        except OSError as e:
+            messagebox.showerror("Could not save", str(e))
+            return
+        self.log(f"Saved {path} ({len(self.result['claims'])} claims in {len(self.groups)} group(s)).")
 
     def fill_form(self):
         group = self.selected_group()

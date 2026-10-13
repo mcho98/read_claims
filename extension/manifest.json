@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Claim Filler",
+  "version": "0.1.0",
+  "description": "Reads a client's monthly hours from the timesheet workbook and enters them as claims in the online claim form.",
+  "action": { "default_title": "Open Claim Filler" },
+  "side_panel": { "default_path": "panel.html" },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["sidePanel", "scripting", "storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

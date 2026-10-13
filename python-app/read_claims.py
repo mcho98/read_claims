@@ -23,7 +23,8 @@ Usage:
   python read_claims.py FILE.xlsx --client 2           # by number from --list
   python read_claims.py FILE.xlsx --client "John Doe"  # or by name
   python read_claims.py FILE.xlsx                      # menu; "exit" quits; asks for the URL after a client is picked
-  python read_claims.py FILE.xlsx --client 1 --json out.json
+  python read_claims.py FILE.xlsx --client 1 --json out.json     # export for the extension
+  python read_claims.py FILE.xlsx --json exports/                # one file per client in a folder
   python read_claims.py FILE.xlsx --start 20260810 --end 20260820   # only that date range
   python read_claims.py FILE.xlsx --url http://localhost:3000   # fill the form
   ... --url http://localhost:3000 --first-only   # enter just the first claim (testing)
@@ -205,6 +206,51 @@ def group_label(groups, n):
     """Human text for group n (1-based), e.g. 'Group 2 of 2 (claims 11-15)'."""
     start = sum(len(g) for g in groups[:n - 1]) + 1
     return f"Group {n} of {len(groups)} (claims {start}-{start + len(groups[n - 1]) - 1})"
+
+
+EXPORT_FORMAT = "claimfiller-claims"
+EXPORT_VERSION = 1
+
+
+def build_export(result, groups, start, end, source_file, sheet):
+    """The JSON document the Chrome extension will import: one client, optional date range,
+    claims already split into groups of at most MAX_CLAIMS_PER_GROUP. Bump EXPORT_VERSION
+    when the shape changes so the extension can refuse files it does not understand."""
+    claims = result["claims"]
+    return {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source_file": os.path.basename(source_file),
+        "sheet": sheet,
+        "client": result["client"],
+        "rate": result["rate"],
+        "date_range": {"start": start.isoformat() if start else None,
+                       "end": end.isoformat() if end else None},
+        "max_claims_per_group": MAX_CLAIMS_PER_GROUP,
+        "totals": {"claims": len(claims),
+                   "hours": round(sum(c["hours"] for c in claims), 2),
+                   "total_cost": to_money(sum(Decimal(str(c["total_cost"] or 0)) for c in claims))},
+        "problems": result["problems"],   # the extension must refuse to fill when this is not empty
+        "warnings": result["warnings"],
+        "groups": [{"group": n, "claims": [
+            {"service_date": c["service_date"], "service": c["service"], "hours": c["hours"],
+             "total_cost": c["total_cost"], "cell": c["cell"]} for c in group]}
+            for n, group in enumerate(groups, 1)],
+    }
+
+
+def export_filename(client, start, end):
+    """e.g. John_Doe_20260810-20260815.json (dates left out when no range was set)."""
+    name = re.sub(r"[^A-Za-z0-9]+", "_", client).strip("_") or "client"
+    if start or end:
+        name += f"_{start.strftime('%Y%m%d') if start else 'start'}-{end.strftime('%Y%m%d') if end else 'end'}"
+    return name + ".json"
+
+
+def write_export(path, document):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(document, f, indent=2, ensure_ascii=False)
 
 
 def choose_client(clients, choice):
@@ -581,9 +627,13 @@ def process_client(ws, client, date_columns, args, session):
     result = read_client(ws, client, date_columns, args.start, args.end)
     print_result(result)
     if args.json:
-        with open(args.json, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"Saved {args.json}")
+        path = args.json
+        if os.path.isdir(path) or path.endswith(("/", "\\")):  # a folder: one auto-named file per client
+            os.makedirs(path, exist_ok=True)
+            path = os.path.join(path, export_filename(client["name"], args.start, args.end))
+        write_export(path, build_export(result, group_claims(result["claims"]), args.start, args.end,
+                                        args.workbook, ws.title))
+        print(f"Saved {path}" + ("  (has problems: the extension will refuse to fill it)" if result["problems"] else ""))
     if result["problems"]:
         print("Fix the problems above before filling the form.")
         return
@@ -630,7 +680,8 @@ def main():
     parser.add_argument("--sheet", help="sheet name (default: first sheet)")
     parser.add_argument("--list", action="store_true", help="list the clients found and exit")
     parser.add_argument("--client", help="client number from --list, or client name")
-    parser.add_argument("--json", metavar="FILE", help="also save the parsed claims as JSON (overwritten for each client)")
+    parser.add_argument("--json", metavar="FILE", help="also save the claims as JSON for the Chrome extension. FILE is written as given "
+                             "(overwritten for each client); give a folder to get one auto-named file per client")
     parser.add_argument("--start", metavar="YYYYMMDD", help="only entries on or after this date (default: all)")
     parser.add_argument("--end", metavar="YYYYMMDD", help="only entries on or before this date (default: all)")
     parser.add_argument("--first-only", action="store_true",

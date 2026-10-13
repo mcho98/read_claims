@@ -1,0 +1,9 @@
+{
+  "name": "claim-filler-extension",
+  "private": true,
+  "type": "module",
+  "description": "Chrome extension version of Claim Filler (see ../python-app for the original)",
+  "scripts": {
+    "test": "node --test test/core.test.mjs"
+  }
+}

@@ -1,0 +1,25 @@
+:root { color-scheme: light dark; --accent: #1b6ec2; --muted: #6b7280; --bad: #b00020; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 12px; font: 13px/1.4 system-ui, sans-serif; }
+h1 { font-size: 16px; margin: 0 0 8px; }
+h1 span { font-weight: normal; color: var(--muted); font-size: 12px; }
+h2 { font-size: 13px; margin: 0 0 4px; }
+section { margin-bottom: 14px; }
+.muted { color: var(--muted); font-size: 12px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; margin: 6px 0; }
+select, input[type=text], input[type=url], input:not([type]) { padding: 4px 6px; font: inherit; }
+#clients { width: 100%; }
+input[type=url] { width: 100%; }
+button, .button { display: inline-block; padding: 5px 12px; font: inherit; color: #fff; background: var(--accent); border: 0; border-radius: 4px; cursor: pointer; }
+button.secondary, .button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+.check { display: block; margin: 6px 0; }
+#clientTitle { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+.tablewrap { max-height: 220px; overflow: auto; border: 1px solid #8884; border-radius: 4px; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th, td { padding: 3px 6px; text-align: left; border-bottom: 1px solid #8883; white-space: nowrap; }
+th { position: sticky; top: 0; background: Canvas; }
+.num { text-align: right; }
+#problems { color: var(--bad); white-space: pre-wrap; margin-top: 4px; }
+#summary { margin-top: 4px; }
+#log { height: 180px; overflow: auto; margin: 0; padding: 6px; background: #8881; border-radius: 4px; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap; }

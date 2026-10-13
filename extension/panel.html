@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Claim Filler</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header>
+    <h1>Claim Filler <span id="version"></span></h1>
+  </header>
+
+  <section>
+    <label class="button" for="file">1. Choose Excel file…</label>
+    <input id="file" type="file" accept=".xlsx,.xlsm" hidden>
+    <label class="button secondary" for="jsonfile">or open an exported JSON…</label>
+    <input id="jsonfile" type="file" accept=".json,application/json" hidden>
+    <div id="fileName" class="muted">No file chosen</div>
+  </section>
+
+  <section>
+    <h2>2. Client</h2>
+    <select id="clients" size="4" aria-label="Client"></select>
+    <div class="row">
+      <label>From <input id="start" placeholder="YYYYMMDD" size="9" maxlength="10"></label>
+      <label>To <input id="end" placeholder="YYYYMMDD" size="9" maxlength="10"></label>
+    </div>
+    <div class="muted">Dates are optional. Leave both empty for the whole month.</div>
+  </section>
+
+  <section>
+    <div id="clientTitle">No client selected</div>
+    <div class="row">
+      <label>Group to fill <span class="muted">(the website takes 10 at a time)</span>
+        <select id="group" disabled></select></label>
+    </div>
+    <div class="tablewrap">
+      <table id="claims">
+        <thead><tr><th>Grp</th><th>Service date</th><th>Service</th><th class="num">Hours</th><th class="num">Total cost ($)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="summary"></div>
+    <div id="problems" role="alert"></div>
+  </section>
+
+  <section>
+    <label>Claim website address
+      <input id="url" type="url" spellcheck="false">
+    </label>
+    <div class="row">
+      <button id="open">3. Open claim website</button>
+      <button id="fill" disabled>4. Fill form</button>
+      <button id="stop" hidden>Stop</button>
+    </div>
+    <label class="check"><input id="firstOnly" type="checkbox"> Test: only the first claim (does not click Predetermine)</label>
+    <div class="row">
+      <button id="export" class="secondary" disabled>Export JSON…</button>
+    </div>
+  </section>
+
+  <pre id="log" aria-live="polite"></pre>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
