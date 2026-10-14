@@ -10,6 +10,10 @@ on:
         default: ""
 permissions:
   contents: write
+# The extension workflow adds its zip to the same release; run one tag's workflows one after the other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 env:
   TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
 jobs:

@@ -25,8 +25,8 @@ GitHub > Actions > **Build ClaimFiller** > **Run workflow**, enter a tag such as
 
 A Chrome-only version that runs inside your own browser (no Python, no exe).
 
-1. Download `ClaimFiller-extension-<version>.zip` from the newest **ext-v…** entry on the [Releases page](https://github.com/mcho98/read_claims/releases) (these are marked "Pre-release").
+1. Download [ClaimFiller-extension.zip](https://github.com/mcho98/read_claims/releases/latest/download/ClaimFiller-extension.zip) (it is attached to every app release).
 2. Unzip it. In Chrome open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose the unzipped folder.
 3. Click the Claim Filler toolbar icon to open the side panel. Details: [extension/README.md](extension/README.md).
 
-Publishing (developer): Actions > **Build Chrome extension** > Run workflow with a tag such as `ext-v0.2.0` (or push that tag). It runs the tests, stamps the version into `manifest.json`, zips the runtime files and attaches the zip to a pre-release.
+Publishing (developer): the extension is built and attached automatically with every app release (`app-v*` / `v*` tag; version number taken from the tag). To switch that off, set the repository variable `BUILD_EXTENSION` to `false` (Settings > Secrets and variables > Actions > Variables); delete it or set `true` to switch it back on. To release the extension alone, push an `ext-vX.Y.Z` tag or run **Build Chrome extension** from the Actions page with a tag; that release is marked Pre-release.

@@ -1,19 +1,27 @@
 name: Build Chrome extension
 on:
   push:
-    tags: ["ext-v*"]    # pushing e.g. ext-v0.2.0 tests, zips and publishes the extension
+    # Runs with every app release too (see the BUILD_EXTENSION switch below); ext-v* tags release the extension alone.
+    tags: ["app-v*", "v*", "ext-v*"]
   workflow_dispatch:    # Actions tab > Run workflow
     inputs:
       tag:
-        description: "Release tag to publish, e.g. ext-v0.2.0 (leave blank for a test build kept only as a download on the run page)"
+        description: "Release tag to publish, e.g. app-v1.0.3 or ext-v0.2.0 (leave blank for a test build kept only as a download on the run page)"
         required: false
         default: ""
 permissions:
   contents: write
+# Both workflows add files to the same release; run one tag's workflows one after the other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 env:
   TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
 jobs:
   extension:
+    # On/off switch: repository variable BUILD_EXTENSION (Settings > Secrets and variables > Actions > Variables).
+    # Set it to "false" to skip the extension on app releases. ext-v* tags and manual runs always build it.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'ext-v') || vars.BUILD_EXTENSION != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,18 +39,27 @@ jobs:
           if [ -z "$VERSION" ]; then VERSION=$(node -p "require('./extension/manifest.json').version"); fi
           node -e "const fs=require('fs');const p='extension/manifest.json';const m=JSON.parse(fs.readFileSync(p));m.version='$VERSION';fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n')"
           cd extension
-          zip -r "../ClaimFiller-extension-$VERSION.zip" manifest.json background.js panel.html panel.css panel.js src vendor -x "*.DS_Store"
-          echo "zip=ClaimFiller-extension-$VERSION.zip" >> "$GITHUB_OUTPUT"
-      - name: Publish to the release page
-        if: env.TAG != ''
+          # Fixed file name so releases/latest/download/ClaimFiller-extension.zip always works; the version is inside manifest.json.
+          zip -r "../ClaimFiller-extension.zip" manifest.json background.js panel.html panel.css panel.js src vendor -x "*.DS_Store"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      # Extension-only release: a pre-release, so "latest" keeps pointing at the Windows/Mac app.
+      - name: Publish to an extension-only release
+        if: startsWith(env.TAG, 'ext-v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          prerelease: true   # keeps "latest" pointing at the Windows/Mac app release
-          files: ${{ steps.pack.outputs.zip }}
+          prerelease: true
+          files: ClaimFiller-extension.zip
+      # App release: add the zip to the app's release and leave its pre-release flag alone.
+      - name: Add to the app release
+        if: env.TAG != '' && !startsWith(env.TAG, 'ext-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: ClaimFiller-extension.zip
       - name: Keep as a download on this run (test builds)
         if: env.TAG == ''
         uses: actions/upload-artifact@v4
         with:
           name: ClaimFiller-extension
-          path: ${{ steps.pack.outputs.zip }}
+          path: ClaimFiller-extension.zip

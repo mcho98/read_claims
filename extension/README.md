@@ -5,7 +5,7 @@ workbook, pick a client, then fill the claim form in your own browser tab (no Pl
 debugging port, no separate profile).
 
 ## Install
-From a release: download `ClaimFiller-extension-<version>.zip` from the repo's Releases page (the **ext-v…** pre-releases), unzip it, then follow steps 1-3 below with the unzipped folder. From a clone: use this `extension` folder.
+From a release: download `ClaimFiller-extension.zip` from the repo's Releases page, unzip it, then follow steps 1-3 below with the unzipped folder. From a clone: use this `extension` folder.
 
 ## Install steps
 1. Chrome → `chrome://extensions` → turn on **Developer mode**.
@@ -45,4 +45,7 @@ Keys: `fieldServiceDate, fieldService, fieldHours, fieldCost, buttonAdd, buttonP
 - Typing is simulated with DOM events (`isTrusted` is false); the Python version used real key presses.
 
 ## Releasing
-`.github/workflows/build-extension.yml` (repo root): push a tag `ext-vX.Y.Z` or run it from the Actions page with that tag. It runs `npm test`, writes the version into `manifest.json`, zips `manifest.json`, `background.js`, `panel.*`, `src/`, `vendor/` and attaches `ClaimFiller-extension-X.Y.Z.zip` to a pre-release (so the Windows/Mac `releases/latest` links keep working). Chrome only installs such a zip via Developer mode; one-click installs need the Chrome Web Store (same zip, $5 one-time fee).
+`.github/workflows/build-extension.yml` (repo root) runs on every app release tag (`app-v*`, `v*`) and on `ext-v*` tags. It runs `npm test`, writes the tag's version number into `manifest.json`, zips `manifest.json`, `background.js`, `panel.*`, `src/`, `vendor/` as `ClaimFiller-extension.zip` and attaches it to the same release (stable link: `releases/latest/download/ClaimFiller-extension.zip`).
+- **Switch off for app releases:** set the repository variable `BUILD_EXTENSION` to `false` (Settings > Secrets and variables > Actions > Variables). Remove it or set `true` to switch back on.
+- **Extension on its own:** push `ext-vX.Y.Z` or use Run workflow with that tag; it ignores the switch and publishes a pre-release.
+- Chrome only installs such a zip via Developer mode; one-click installs need the Chrome Web Store (same zip, $5 one-time fee).
