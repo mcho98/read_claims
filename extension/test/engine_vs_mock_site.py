@@ -21,7 +21,7 @@ with sync_playwright() as p:
     page.goto(URL)
     page.wait_for_timeout(1500)
     page.add_script_tag(path=str(HERE.parent / "src" / "content.js"))
-    print("check:", page.evaluate("ClaimFillerEngine.create().check()"))
+    print("check:", page.evaluate("ClaimFillerEngine.create().readState()"))
     logs = []
     page.expose_function("pyLog", lambda text: logs.append(text))
     outcome = page.evaluate(

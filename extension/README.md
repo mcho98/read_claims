@@ -25,8 +25,12 @@ From a release: download `ClaimFiller-extension-<version>.zip` from the repo's R
 - `vendor/xlsx.full.min.js` — SheetJS 0.18.5 (Apache-2.0, see `vendor/xlsx-LICENSE.txt`); Chrome extensions cannot load it from a CDN.
 - `shared/` (repo root) — `mock_data.xlsx` and the `out.json` the Python app made from it.
 
+## Log
+The panel log has time stamps for every step (tab found, form values, each box typed, how long the page refresh took, the total after each Add, any message the site shows). Use **Copy log** / **Save log…** to send it when something goes wrong.
+
 ## Tests
 - `npm test` — the JS reader must reproduce `../shared/out.json` exactly from `../shared/mock_data.xlsx`, plus date range, grouping, rounding and date parsing.
+- `python3 test/panel_flow_test.py [--first-only]` — loads the extension into Chromium and runs the whole panel flow against `test/real_like_site.py` (a local site that reloads after Add and refreshes the form after date/service changes).
 - `python3 test/engine_vs_mock_site.py` — runs `src/content.js` against the mock website (needs internet and Python Playwright).
 
 ## Form wording

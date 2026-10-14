@@ -70,7 +70,10 @@ TOTAL_COST_PATTERNS = [r"Total cost\s*:\s*\$\s*([\d,]*\.?\d+)", r"(?m)^[ \t]*\$\
 TYPING_DELAY_MS = 30      # pause between keystrokes when typing hours/cost (config key typing_delay_ms)
 FIELD_TRIES = 3           # times a single form box is re-filled if what it holds is not what was typed
 MAX_ATTEMPTS = 3          # tries per claim before giving up for good
-TOTALS_WAIT_SECONDS = 5   # how long to wait for the website totals to update after Add claim
+TOTALS_WAIT_SECONDS = 8   # how long to wait for the website totals to update after Add claim (the page reloads)
+PPR_MIN_PAUSE_MS = 700    # minimum pause after changing the date/service (the site refreshes parts of the form itself)
+PPR_QUIET_MS = 400        # the page must be unchanged this long before typing on
+PPR_MAX_WAIT_MS = 8000    # never wait longer than this for such a refresh
 
 
 def apply_config(config):
@@ -330,10 +333,14 @@ class FormFiller:
 
     def __init__(self, url, log=print):
         self.url = url
-        self.log = log
+        self._emit = log
         self.pw = self.browser = self.page = self.chrome_proc = None
         self.port = None
         self.screenshot_dir = os.path.join(os.getcwd(), "output")  # failure screenshots go in an "output" folder (the app puts it next to the program)
+
+    def log(self, text):
+        """Log with a time stamp, so a slow or stuck step can be spotted afterwards."""
+        self._emit(f"[{time.strftime('%H:%M:%S')}] {text}")
 
     def open(self):
         """Start the user's own Google Chrome on the form address, with no automation attached.
@@ -377,6 +384,16 @@ class FormFiller:
         # Use the tab that has the form; otherwise the last tab (the one most recently opened).
         self.page = next((p for p in pages if p.get_by_role("button", name=BUTTON_ADD).count()), pages[-1])
         self.page.set_default_timeout(10000)  # fail a stuck step quickly so the retry logic can react
+        # A native alert()/confirm() would freeze the page until someone clicks it: log it and accept.
+        self.page.on("dialog", self._on_dialog)
+        self.log(f"Connected to Chrome; using the tab at {self.page.url}")
+
+    def _on_dialog(self, dialog):
+        self.log(f"    the page showed a {dialog.type} pop-up: {dialog.message!r} (accepted)")
+        try:
+            dialog.accept()
+        except Exception:
+            pass
 
     def save_screenshot(self, name):
         """Keep a picture of the page when an attempt fails, to see what the form looked like."""
@@ -393,7 +410,10 @@ class FormFiller:
     def read_totals(self):
         """The website's running total cost as a Decimal (the last matching total on the page),
         or None if no total is shown (e.g. the claims table is still empty)."""
-        text = self.page.inner_text("body")
+        try:
+            text = self.page.inner_text("body")
+        except Exception:  # the page is reloading right now
+            return None
         for pattern in TOTAL_COST_PATTERNS:
             found = re.findall(pattern, text, re.I)
             if found:
@@ -444,6 +464,51 @@ class FormFiller:
         except Exception:
             return wanted.strip().lower() == actual.strip().lower()
 
+    def page_errors(self):
+        """Messages the site shows about invalid input (error spans, fields coloured as invalid)."""
+        try:
+            return self.page.evaluate("""() => {
+              const out = [];
+              for (const el of document.querySelectorAll('[id*="ErrorMsg"], [id*="errorMsg"], [role=alert]')) {
+                const t = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+                if (t && !out.includes(t)) out.push(t);
+              }
+              for (const el of document.querySelectorAll('input, select')) {
+                if (/pink/i.test((el.style && el.style.backgroundColor) || ''))
+                  out.push('a field is marked invalid (' + (el.id || el.name || 'unnamed') + ')');
+              }
+              return out; }""")
+        except Exception:
+            return []
+
+    def wait_for_refresh(self, why):
+        """After changing the date or the service the site refreshes parts of the form from the
+        server and may wipe what was typed. Wait that out before typing anything else."""
+        started = time.time()
+        self.page.wait_for_timeout(PPR_MIN_PAUSE_MS)
+        signal = "no signal"
+        try:
+            while (time.time() - started) * 1000 < PPR_MAX_WAIT_MS:
+                idle = self.page.evaluate(
+                    "() => (window.AdfPage && AdfPage.PAGE && AdfPage.PAGE.isSynchronizedWithServer)"
+                    " ? !!AdfPage.PAGE.isSynchronizedWithServer() : null")
+                if idle is None:
+                    break
+                signal = "idle" if idle else "busy"
+                if idle:
+                    break
+                self.page.wait_for_timeout(150)
+            left = max(300, PPR_MAX_WAIT_MS - int((time.time() - started) * 1000))
+            self.page.evaluate("""([quiet, max]) => new Promise(resolve => {
+              let t = setTimeout(done, quiet); const stop = setTimeout(done, max);
+              const o = new MutationObserver(() => { clearTimeout(t); t = setTimeout(done, quiet); });
+              o.observe(document.body, {subtree: true, childList: true, attributes: true, characterData: true});
+              function done() { o.disconnect(); clearTimeout(t); clearTimeout(stop); resolve(); } })""",
+                               [PPR_QUIET_MS, left])
+        except Exception as e:
+            self.log(f"    (could not watch the page refresh: {str(e).splitlines()[0]})")
+        self.log(f"    waited {int((time.time() - started) * 1000)} ms for the page to finish refreshing after the {why} (page says: {signal})")
+
     def settle(self):
         """Wait until the form has stopped changing, so a late reset from the previous add
         can't land in the middle of typing the next claim."""
@@ -459,10 +524,11 @@ class FormFiller:
             last = now
             self.page.wait_for_timeout(300)
 
-    def set_box(self, name, text, typed):
+    def set_box(self, name, text, typed, refreshes=False):
         """Put text in a box and check it stuck; re-fill up to FIELD_TRIES times. True if it holds the text."""
-        box = self.boxes()[name]
-        for _ in range(FIELD_TRIES):
+        for attempt in range(FIELD_TRIES):
+            box = self.boxes()[name]
+            self.log(f"    {'re-' if attempt else ''}{'typing' if typed else 'setting'} {name}: {text!r}")
             if typed:
                 # Real keystrokes + Tab fire keydown/keyup/change/blur like a person typing.
                 box.fill("")
@@ -472,19 +538,29 @@ class FormFiller:
                 box.fill(text)
                 if name == "date":
                     box.press("Escape")  # close the calendar picker if it opened
-            self.page.wait_for_timeout(100)
-            if self.same(text, self.values()[name]):
+                    box.press("Tab")     # leave the box: the site commits the date on blur
+            if refreshes:
+                self.wait_for_refresh(name)
+            else:
+                self.page.wait_for_timeout(150)
+            now = self.values()[name]
+            if self.same(text, now):
                 return True
+            self.log(f"    the {name} box holds {now!r} instead of {text!r}")
         return False
 
     def enter_claim(self, c):
+        self.log(f"  entering {c['service_date']} {c['service']} {c['hours']:g}h ${c['total_cost']}")
         self.settle()
         wanted = {"date": c["service_date"], "hours": f"{c['hours']:g}"}
         if c["total_cost"] is not None:
             wanted["cost"] = f"{c['total_cost']:.2f}"
-        if not self.set_box("date", wanted["date"], typed=False):
+        # Date and service are "auto-submit" boxes on the real site: each change makes the page refresh.
+        if not self.set_box("date", wanted["date"], typed=False, refreshes=True):
             raise RuntimeError("the service date box would not keep its value")
+        self.log(f"    choosing service {c['service']!r}")
         self.select_service(c["service"])
+        self.wait_for_refresh("service")
         for name in ("hours", "cost"):
             if name in wanted and not self.set_box(name, wanted[name], typed=True):
                 raise RuntimeError(f"the {name} box would not keep its value")
@@ -500,14 +576,20 @@ class FormFiller:
             for n in wrong:
                 if n == "service":
                     self.select_service(c["service"])
+                    self.wait_for_refresh("service")
                 else:
-                    self.set_box(n, wanted[n], typed=n in ("hours", "cost"))
+                    self.set_box(n, wanted[n], typed=n in ("hours", "cost"), refreshes=(n == "date"))
         else:
             raise RuntimeError(f"form is not right and will not be submitted: {self.describe_boxes()}")
+        errors = self.page_errors()
+        if errors:
+            raise RuntimeError(f"the site shows a problem with the form: {' | '.join(errors)}")
+        self.log(f"    clicking {BUTTON_ADD!r}")
         self.page.get_by_role("button", name=BUTTON_ADD).click()
-        # The site may show "Verifying..." in place of the button while it checks the claim.
+        # The real site reloads the whole page after Add claim (and may show "Verifying..." first).
         self.page.wait_for_timeout(300)
         try:
+            self.page.wait_for_load_state("load", timeout=TOTALS_WAIT_SECONDS * 1000)
             self.page.get_by_role("button", name=BUTTON_ADD).wait_for(timeout=TOTALS_WAIT_SECONDS * 1000)
         except Exception:
             pass
@@ -534,6 +616,7 @@ class FormFiller:
             expected = expected + Decimal(str(c["total_cost"] or 0)).quantize(CENT)
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 problem = None
+                self.log(f"Claim {i}/{len(claims)}: {label}, attempt {attempt}/{MAX_ATTEMPTS}")
                 try:
                     self.enter_claim(c)
                 except Exception as e:
@@ -547,8 +630,10 @@ class FormFiller:
                            f"but ${expected} was expected. Check the website before continuing.")
                     self.log(msg)
                     return {"ok": False, "added": i - 1, "message": msg}
+                site_says = self.page_errors()
                 self.log(f"  claim {i} ({label}) attempt {attempt}/{MAX_ATTEMPTS} failed: "
-                         f"{problem or 'the website totals did not change'}; {self.describe_boxes()}")
+                         f"{problem or 'the website totals did not change'}; {self.describe_boxes()}"
+                         + (f"; the site says: {' | '.join(site_says)}" if site_says else ""))
                 self.save_screenshot(f"failed-claim-{i}-attempt-{attempt}")
             else:
                 msg = f"Stopped: claim {i} ({label}) failed {MAX_ATTEMPTS} times. {i - 1} of {len(claims)} claims were added."

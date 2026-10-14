@@ -7,3 +7,7 @@ __pycache__/
 /python-app/dist/
 *.spec
 /extension/node_modules/
+
+# saved pages of the real site: contain patient details and session tokens, never commit
+shared/*.html
+shared/*.har

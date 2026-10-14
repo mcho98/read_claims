@@ -1,11 +1,14 @@
 // Form-filling engine. Runs inside the claim website's page (injected by the side panel).
-// A port of FormFiller in python-app/read_claims.py: it fills one claim at a time and only
-// moves on when the website's running total cost equals the rolling sum kept here, retries a
-// claim up to 3 times, stops everything after the third failure, and clicks "Predetermine"
-// only when every claim in the group is verified.
+// A port of FormFiller in python-app/read_claims.py.
 //
-// Plain script (not a module) so it can be injected as-is. Everything lives on
-// globalThis.ClaimFillerEngine so tests can drive it without the extension.
+// The real site reloads the whole page after "Add claim", which destroys this script, so the
+// extension cannot run the whole claim loop here. Instead the side panel keeps the loop and
+// calls the small operations below one at a time (ClaimFillerEngine.run): "check", "state",
+// "enter" (fill one claim and click Add claim) and "predetermine". Each call is stateless, so
+// the panel can re-inject this file after a reload and carry on.
+// fill() is the old single-page loop; it is kept for sites that do not reload (and for tests).
+//
+// Plain script (not a module) so it can be injected as-is.
 (() => {
   if (globalThis.ClaimFillerEngine) return;
 
@@ -19,7 +22,10 @@
     typingDelayMs: 30, // pause between keystrokes when typing hours/cost
     fieldTries: 3, // times one box is re-filled if it does not hold what was typed
     maxAttempts: 3, // tries per claim before giving up for good
-    totalsWaitSeconds: 5, // how long to wait for the website total to update after Add claim
+    totalsWaitSeconds: 8, // how long to wait for the website total to update after Add claim
+    pprMinPauseMs: 700, // minimum pause after changing the date/service (the site refreshes itself)
+    pprQuietMs: 400, // the page must be unchanged this long before typing on
+    pprMaxWaitMs: 8000, // never wait longer than this for a refresh to finish
   };
 
   // The real site shows only a bare running total ("$416.26") in the last row of the claims
@@ -81,6 +87,12 @@
   function key(el, type, k) {
     el.dispatchEvent(new KeyboardEvent(type, { key: k, bubbles: true, cancelable: true }));
   }
+  /** Leave the box the way a person does (Tab/click away): sites often commit the value on blur. */
+  function leave(el) {
+    fire(el, "change");
+    el.blur();
+    fire(el, "focusout");
+  }
 
   /** Type text key by key (keydown/keypress/input/keyup), then change + blur, like a person would. */
   async function typeInto(el, text, delayMs) {
@@ -96,16 +108,14 @@
       key(el, "keyup", ch);
       if (delayMs) await sleep(delayMs);
     }
-    fire(el, "change");
-    el.blur();
-    fire(el, "focusout");
+    leave(el);
   }
 
   function setPlain(el, text) {
     el.focus();
     nativeSetter(el).call(el, text);
     fire(el, "input");
-    fire(el, "change");
+    leave(el);
   }
 
   const numberOf = (s) => Number(String(s).replace(/[$,\s]/g, ""));
@@ -127,10 +137,69 @@
     return null;
   }
 
+  /** Messages the site shows about invalid input (error spans and fields coloured as invalid). */
+  function pageErrors() {
+    const out = [];
+    for (const el of document.querySelectorAll('[id*="ErrorMsg"], [id*="errorMsg"], [role=alert]')) {
+      const t = clean(el.textContent);
+      if (t && !out.includes(t)) out.push(t);
+    }
+    for (const el of document.querySelectorAll("input, select")) {
+      const bg = (el.style && el.style.backgroundColor) || "";
+      if (/pink|rgb\(255, 192, 203\)/i.test(bg)) out.push(`a field is marked invalid (${el.id || el.name || "unnamed"})`);
+    }
+    return out;
+  }
+
+  // --- page probe -------------------------------------------------------------------------
+  // A small script placed in the page itself (it needs the page's own JavaScript world) that
+  //  * reports whether the site's framework (Oracle ADF) has finished refreshing: data-cf-idle
+  //  * reports native alert()/confirm() pop-ups instead of letting them block the page
+  // If the site's security policy refuses inline scripts, the probe is silently skipped and
+  // the engine falls back to watching the page for changes.
+  let probeInstalled = false;
+  function installProbe(log) {
+    if (probeInstalled) return;
+    probeInstalled = true;
+    window.addEventListener("message", (e) => {
+      if (e.source === window && e.data && e.data.claimFillerDialog) {
+        log(`    the page showed a ${e.data.kind} pop-up: ${JSON.stringify(e.data.text)}`);
+      }
+    });
+    try {
+      const s = document.createElement("script");
+      s.textContent = `(function(){
+        if (window.__claimFillerProbe) return; window.__claimFillerProbe = true;
+        var root = document.documentElement;
+        function idle(){ try { var p = window.AdfPage && window.AdfPage.PAGE;
+          return p && p.isSynchronizedWithServer ? String(!!p.isSynchronizedWithServer()) : "unknown"; } catch(e){ return "unknown"; } }
+        setInterval(function(){ root.setAttribute("data-cf-idle", idle()); }, 100);
+        var say = function(kind, text){ try { window.postMessage({claimFillerDialog:true, kind:kind, text:String(text)}, "*"); } catch(e){} };
+        window.alert = function(t){ say("alert", t); };
+        window.confirm = function(t){ say("confirm", t); return true; };
+      })();`;
+      (document.head || document.documentElement).appendChild(s);
+      s.remove();
+    } catch (e) { /* probe unavailable */ }
+  }
+  const pageIdle = () => document.documentElement.getAttribute("data-cf-idle"); // "true" | "false" | "unknown" | null
+
+  /** Resolve when the page body has not changed for quietMs (or after maxMs). */
+  function quiet(quietMs, maxMs) {
+    return new Promise((resolve) => {
+      let timer = setTimeout(done, quietMs);
+      const stopAt = setTimeout(done, maxMs);
+      const obs = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, quietMs); });
+      obs.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+      function done() { obs.disconnect(); clearTimeout(timer); clearTimeout(stopAt); resolve(); }
+    });
+  }
+
   function create(userOptions = {}) {
     const opt = { ...DEFAULTS, ...userOptions };
     let stopRequested = false;
     const log = userOptions.log || (() => {});
+    installProbe(log);
 
     const boxes = () => ({
       date: findControl(opt.fieldServiceDate),
@@ -172,6 +241,19 @@
       }
     }
 
+    /**
+     * After changing the date or the service the site refreshes parts of the form from the
+     * server and may wipe what was typed. Wait out that refresh before typing anything else.
+     */
+    async function waitForRefresh(why) {
+      const started = Date.now();
+      await sleep(opt.pprMinPauseMs);
+      while (Date.now() - started < opt.pprMaxWaitMs && pageIdle() === "false") await sleep(150);
+      const left = Math.max(300, opt.pprMaxWaitMs - (Date.now() - started));
+      await quiet(opt.pprQuietMs, left);
+      log(`    waited ${Date.now() - started} ms for the page to finish refreshing after the ${why} (page says: ${pageIdle() || "no signal"})`);
+    }
+
     function selectService(name) {
       const sel = boxes().service;
       const want = lower(name);
@@ -186,55 +268,84 @@
     }
 
     /** Put text in a box and check it stuck; re-fill up to fieldTries times. */
-    async function setBox(name, text, typed) {
+    async function setBox(name, text, typed, refreshes) {
       for (let i = 0; i < opt.fieldTries; i++) {
         const el = boxes()[name];
+        log(`    ${i ? "re-" : ""}${typed ? "typing" : "setting"} ${name}: ${JSON.stringify(text)}`);
         if (typed) {
           await typeInto(el, text, opt.typingDelayMs);
         } else {
           setPlain(el, text);
           key(el, "keydown", "Escape"); // close a calendar picker if one opened
         }
-        await sleep(100);
-        if (same(text, values()[name])) return true;
+        if (refreshes) await waitForRefresh(name);
+        else await sleep(150);
+        const now = values()[name];
+        if (same(text, now)) return true;
+        log(`    the ${name} box holds ${JSON.stringify(now)} instead of ${JSON.stringify(text)}`);
       }
       return false;
     }
 
+    /**
+     * Fill the form for one claim and click Add claim. Returns {status:"clicked"} or
+     * {status:"failed", reason, errors}. If the site reloads the page on click, this call is
+     * cut off by the reload; the caller then checks the total to see whether the claim landed.
+     */
     async function enterClaim(c) {
-      await settle();
-      const wanted = { date: c.service_date, hours: String(c.hours) };
-      if (c.total_cost !== null && c.total_cost !== undefined) wanted.cost = dollars(cents(c.total_cost));
-      if (!(await setBox("date", wanted.date, false))) throw new Error("the service date box would not keep its value");
-      selectService(c.service);
-      for (const name of ["hours", "cost"]) {
-        if (name in wanted && !(await setBox(name, wanted[name], true))) throw new Error(`the ${name} box would not keep its value`);
-      }
-      // Last look before clicking: a late reset or re-render may have wiped something.
-      let ok = false;
-      for (let i = 0; i < opt.fieldTries && !ok; i++) {
-        const now = values();
-        const wrong = Object.keys(wanted).filter((n) => !same(wanted[n], now[n]));
-        if (lower(now.service) !== lower(c.service)) wrong.push("service");
-        if (!wrong.length) { ok = true; break; }
-        log(`    form changed while filling (${describeBoxes()}); filling again`);
-        for (const n of wrong) {
-          if (n === "service") selectService(c.service);
-          else await setBox(n, wanted[n], n === "hours" || n === "cost");
+      try {
+        log(`  entering ${c.service_date} ${c.service} ${c.hours}h $${dollars(cents(c.total_cost || 0))}`);
+        await settle();
+        const wanted = { date: c.service_date, hours: String(c.hours) };
+        if (c.total_cost !== null && c.total_cost !== undefined) wanted.cost = dollars(cents(c.total_cost));
+        // Date and service are "auto-submit" boxes on the real site: each change makes the page refresh.
+        if (!(await setBox("date", wanted.date, false, true))) throw new Error("the service date box would not keep its value");
+        log(`    choosing service ${JSON.stringify(c.service)}`);
+        selectService(c.service);
+        await waitForRefresh("service");
+        for (const name of ["hours", "cost"]) {
+          if (name in wanted && !(await setBox(name, wanted[name], true, false))) throw new Error(`the ${name} box would not keep its value`);
         }
+        // Last look before clicking: a late refresh may have wiped something.
+        let ok = false;
+        for (let i = 0; i < opt.fieldTries && !ok; i++) {
+          const now = values();
+          const wrong = Object.keys(wanted).filter((n) => !same(wanted[n], now[n]));
+          if (lower(now.service) !== lower(c.service)) wrong.push("service");
+          if (!wrong.length) { ok = true; break; }
+          log(`    ${wrong.join(", ")} changed while filling (${describeBoxes()}); filling again`);
+          for (const n of wrong) {
+            if (n === "service") { selectService(c.service); await waitForRefresh("service"); }
+            else await setBox(n, wanted[n], n === "hours" || n === "cost", n === "date");
+          }
+        }
+        if (!ok) throw new Error(`form is not right and will not be submitted: ${describeBoxes()}`);
+        const errors = pageErrors();
+        if (errors.length) throw Object.assign(new Error(`the site shows a problem with the form: ${errors.join(" | ")}`), { errors });
+        const add = findButton(opt.buttonAdd);
+        if (!add) throw new Error(`could not find the '${opt.buttonAdd}' button`);
+        log(`    clicking '${opt.buttonAdd}'`);
+        add.click();
+        return { status: "clicked" };
+      } catch (e) {
+        return { status: "failed", reason: e.message, errors: e.errors || pageErrors(), form: describeBoxes() };
       }
-      if (!ok) throw new Error(`form is not right and will not be submitted: ${describeBoxes()}`);
-      const add = findButton(opt.buttonAdd);
-      if (!add) throw new Error(`could not find the '${opt.buttonAdd}' button`);
-      add.click();
-      // The site may show "Verifying..." in place of the button while it checks the claim.
-      await sleep(300);
-      const deadline = Date.now() + opt.totalsWaitSeconds * 1000;
-      while (Date.now() < deadline) {
-        const b = findButton(opt.buttonAdd);
-        if (b && !b.disabled) break;
-        await sleep(200);
-      }
+    }
+
+    function readState() {
+      let form = null;
+      let missing = [];
+      try { form = values(); } catch (e) { missing = [e.message]; }
+      if (!findButton(opt.buttonAdd)) missing.push("add button");
+      return { ready: form !== null && missing.length === 0, missing, total: readTotal(), errors: pageErrors(), form, idle: pageIdle() };
+    }
+
+    function predetermine() {
+      const button = findButton(opt.buttonPredetermine);
+      if (!button) return { clicked: false, reason: `could not find the '${opt.buttonPredetermine}' button` };
+      log(`  clicking '${opt.buttonPredetermine}'`);
+      button.click();
+      return { clicked: true };
     }
 
     async function waitForTotal(expected) {
@@ -248,10 +359,11 @@
     }
 
     /**
-     * Add each claim and check it landed by comparing the website total with a rolling sum.
-     * Returns {ok, added, message}. predetermine=false is the "first claim only" test mode.
+     * Single-page loop: add each claim and check it landed by comparing the website total with a
+     * rolling sum. Only usable when the site does NOT reload on Add claim (the panel runs the
+     * loop for the real site). Returns {ok, added, message}.
      */
-    async function fill(claims, { predetermine = true } = {}) {
+    async function fill(claims, { predetermine: doPredetermine = true } = {}) {
       stopRequested = false;
       let expected = readTotal() ?? 0;
       log(`  website total cost before adding: $${dollars(expected)}`);
@@ -264,11 +376,14 @@
         let added = false;
         for (let attempt = 1; attempt <= opt.maxAttempts && !added; attempt++) {
           if (stopRequested) return { ok: false, added: i, message: `Stopped by you after ${i} of ${claims.length} claims.` };
-          let problem = null;
-          try {
-            await enterClaim(c);
-          } catch (e) {
-            problem = `could not use the form (${e.message})`;
+          const r = await enterClaim(c);
+          if (r.status === "clicked") {
+            await sleep(300);
+            for (let w = Date.now(); Date.now() - w < opt.totalsWaitSeconds * 1000;) {
+              const b = findButton(opt.buttonAdd);
+              if (b && !b.disabled) break;
+              await sleep(200);
+            }
           }
           const seen = await waitForTotal(expected);
           if (seen === expected) {
@@ -279,7 +394,7 @@
             log(message);
             return { ok: false, added: i, message };
           } else {
-            log(`  claim ${n} (${label}) attempt ${attempt}/${opt.maxAttempts} failed: ${problem || "the website total did not change"}; ${describeBoxes()}`);
+            log(`  claim ${n} (${label}) attempt ${attempt}/${opt.maxAttempts} failed: ${r.reason || "the website total did not change"}; ${describeBoxes()}`);
           }
         }
         if (!added) {
@@ -289,53 +404,32 @@
         }
       }
       let message = `All ${claims.length} claims added; total cost matches ($${dollars(expected)}).`;
-      if (predetermine) {
-        const button = findButton(opt.buttonPredetermine);
-        if (!button) {
-          message += ` But the '${opt.buttonPredetermine}' button could not be found.`;
-          log("  " + message);
-          return { ok: false, added: claims.length, message };
-        }
-        button.click();
-        message += ` Clicked '${opt.buttonPredetermine}'.`;
+      if (doPredetermine) {
+        const r = predetermine();
+        message += r.clicked ? ` Clicked '${opt.buttonPredetermine}'.` : ` But ${r.reason}.`;
+        if (!r.clicked) { log("  " + message); return { ok: false, added: claims.length, message }; }
       }
       log("  " + message);
       return { ok: true, added: claims.length, message };
     }
 
-    /** Is the Claim details form on this page? Lists what is missing. */
-    function check() {
-      const b = boxes();
-      const missing = Object.keys(b).filter((k) => !b[k]);
-      if (!findButton(opt.buttonAdd)) missing.push("add button");
-      return { ready: missing.length === 0, missing, total: readTotal() };
-    }
-
-    return { fill, check, stop: () => { stopRequested = true; }, describeBoxes };
+    return { fill, enterClaim, readState, predetermine, stop: () => { stopRequested = true; }, describeBoxes };
   }
 
-  globalThis.ClaimFillerEngine = { create, readTotal, findControl, findButton, DEFAULTS };
-
-  // In the extension: talk to the side panel over a port.
-  if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onConnect) {
-    chrome.runtime.onConnect.addListener((port) => {
-      if (port.name !== "claim-filler") return;
-      let engine = null;
-      port.onMessage.addListener(async (msg) => {
-        try {
-          if (msg.type === "check") {
-            port.postMessage({ type: "checked", ...create(msg.options).check() });
-          } else if (msg.type === "fill") {
-            engine = create({ ...msg.options, log: (text) => port.postMessage({ type: "log", text }) });
-            const outcome = await engine.fill(msg.claims, { predetermine: msg.predetermine });
-            port.postMessage({ type: "done", outcome });
-          } else if (msg.type === "stop" && engine) {
-            engine.stop();
-          }
-        } catch (e) {
-          port.postMessage({ type: "done", outcome: { ok: false, added: 0, message: `Stopped: ${e.message}` } });
-        }
-      });
-    });
+  /**
+   * One stateless operation for the side panel: "state" | "enter" | "predetermine".
+   * Log lines are sent to the panel with runtime messages (the page may reload at any moment).
+   */
+  async function run(op, payload, options) {
+    const log = (text) => {
+      try { chrome.runtime.sendMessage({ type: "claim-filler-log", text }); } catch (e) { /* panel closed */ }
+    };
+    const engine = create({ ...options, log });
+    if (op === "state") return engine.readState();
+    if (op === "enter") return engine.enterClaim(payload);
+    if (op === "predetermine") return engine.predetermine();
+    throw new Error(`unknown operation ${op}`);
   }
+
+  globalThis.ClaimFillerEngine = { create, run, readTotal, findControl, findButton, DEFAULTS };
 })();

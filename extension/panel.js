@@ -21,9 +21,27 @@ const state = {
 
 function log(text) {
   const box = $("log");
-  box.textContent += text + "\n";
+  const t = new Date().toLocaleTimeString([], { hour12: false });
+  box.textContent += `[${t}] ${text}\n`;
   box.scrollTop = box.scrollHeight;
 }
+
+// Log lines sent from the claim page (it may reload at any moment, so it reports by message).
+chrome.runtime.onMessage.addListener((m) => {
+  if (m && m.type === "claim-filler-log") log(m.text);
+});
+
+$("copyLog").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("log").textContent);
+  log("Log copied to the clipboard.");
+});
+$("saveLog").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([$("log").textContent], { type: "text/plain" }));
+  a.download = `claim-filler-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
 
 // --- loading files --------------------------------------------------------------------
 $("file").addEventListener("change", async (e) => {
@@ -188,31 +206,84 @@ $("open").addEventListener("click", async () => {
   }
 });
 
+// --- talking to the claim page ----------------------------------------------------------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const withTimeout = (promise, ms, what) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not finish within ${Math.round(ms / 1000)} s`)), ms)),
+]);
+
+/** Wait for the tab to finish loading (the site reloads the page after every Add claim). */
+async function waitForLoaded(tabId, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === "complete") return;
+    await sleep(200);
+  }
+  throw new Error("The page did not finish loading.");
+}
+
+async function inject(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["src/content.js"] });
+}
+
+/** Run one operation of the engine in the page. Resolves with its result; rejects if the page reloads mid-way. */
+async function callEngine(tabId, op, payload, options, timeoutMs = 60000) {
+  await inject(tabId);
+  const [res] = await withTimeout(chrome.scripting.executeScript({
+    target: { tabId },
+    func: (o, p, opt) => globalThis.ClaimFillerEngine.run(o, p, opt),
+    args: [op, payload ?? null, options],
+  }), timeoutMs, `'${op}' in the page`);
+  return res ? res.result : undefined;
+}
+
+/** Ask the page for its state, riding out a reload in progress. */
+async function readPageState(tabId, options, maxWaitMs = 15000) {
+  const deadline = Date.now() + maxWaitMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      await waitForLoaded(tabId, 10000);
+      return await callEngine(tabId, "state", null, options, 10000);
+    } catch (e) {
+      lastError = e;
+      await sleep(300);
+    }
+  }
+  throw lastError || new Error("Could not read the page.");
+}
+
 /** The tab on the claim website that has the Claim details form open. */
 async function findFormTab(url, options) {
   const tabs = await chrome.tabs.query({ url: `${url.origin}/*` });
   if (!tabs.length) throw new Error("The claim website is not open. Click 'Open claim website' first.");
   tabs.sort((a, b) => Number(b.active) - Number(a.active) || (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  log(`Found ${tabs.length} tab(s) on ${url.origin}.`);
   let lastMissing = [];
   for (const tab of tabs) {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content.js"] });
-    const reply = await roundTrip(tab.id, { type: "check", options });
-    if (reply.ready) return tab;
-    lastMissing = reply.missing;
+    log(`Checking tab ${tab.id} (${tab.title || tab.url}) for the Claim details form…`);
+    try {
+      const st = await readPageState(tab.id, options, 8000);
+      if (st.ready) {
+        log(`Form found. Website total cost: ${st.total === null ? "none shown" : "$" + (st.total / 100).toFixed(2)}. Form: ${JSON.stringify(st.form)}`);
+        return tab;
+      }
+      lastMissing = st.missing;
+      log(`  not the form (missing: ${st.missing.join("; ")})`);
+    } catch (e) {
+      log(`  could not check this tab: ${e.message}`);
+    }
   }
-  throw new Error(`The Claim details form was not found (missing: ${lastMissing.join(", ")}). Open the form in the claim website tab and try again.`);
-}
-
-function roundTrip(tabId, message) {
-  return new Promise((resolve, reject) => {
-    const port = chrome.tabs.connect(tabId, { name: "claim-filler" });
-    const timer = setTimeout(() => { port.disconnect(); reject(new Error("The page did not answer.")); }, 5000);
-    port.onMessage.addListener((m) => { clearTimeout(timer); port.disconnect(); resolve(m); });
-    port.postMessage(message);
-  });
+  throw new Error(`The Claim details form was not found (${lastMissing.join("; ") || "no usable tab"}). Open the form in the claim website tab and try again.`);
 }
 
 // --- fill -------------------------------------------------------------------------------
+const MAX_ATTEMPTS = 3;
+const TOTALS_WAIT_MS = 15000; // time for the site to answer Add claim (and reload the page)
+const dollars = (c) => (c / 100).toFixed(2);
+
 async function engineOptions() {
   const { options } = await chrome.storage.local.get("options");
   return options || {}; // optional wording overrides, see README
@@ -237,40 +308,114 @@ $("fill").addEventListener("click", async () => {
   if (!confirm(`Enter ${claims.length} claim(s) for ${state.result.client}${which}?\n\n${note}\n\nCheck that the browser tab is showing the Claim details form.`)) return;
 
   state.running = true;
+  state.stopRequested = false;
   updateButtons();
+  log(`--- Filling ${claims.length} claim(s) for ${state.result.client}${which}${testOnly ? " (test: first claim only)" : ""} ---`);
   try {
     const options = await engineOptions();
     const tab = await findFormTab(url, options);
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content.js"] });
-    const outcome = await runFill(tab.id, claims, !testOnly, options);
-    log(outcome.ok
-      ? `Done for ${state.result.client}. Pick another group or client.`
-      : "STOPPED. " + outcome.message);
+    const outcome = await runClaims(tab.id, claims, !testOnly, options);
+    log(outcome.ok ? `Done for ${state.result.client}. Pick another group or client.` : "STOPPED. " + outcome.message);
   } catch (err) {
     log("Stopped: " + err.message);
   } finally {
     state.running = false;
-    state.port = null;
     updateButtons();
   }
 });
 
-function runFill(tabId, claims, predetermine, options) {
-  return new Promise((resolve, reject) => {
-    const port = chrome.tabs.connect(tabId, { name: "claim-filler" });
-    state.port = port;
-    port.onMessage.addListener((m) => {
-      if (m.type === "log") log(m.text);
-      else if (m.type === "done") { port.disconnect(); resolve(m.outcome); }
-    });
-    port.onDisconnect.addListener(() => reject(new Error("The page was closed or reloaded while filling.")));
-    port.postMessage({ type: "fill", claims, predetermine, options });
-  });
-}
-
 $("stop").addEventListener("click", () => {
-  if (state.port) { state.port.postMessage({ type: "stop" }); log("Stopping after the current claim…"); }
+  state.stopRequested = true;
+  log("Stop requested: finishing the current step first…");
 });
+
+/**
+ * The claim loop. It lives here (not in the page) because the site reloads the page after
+ * every Add claim, which destroys the page script. For each claim: fill + click in the page,
+ * then wait for the reload and read the site's running total cost; the claim counts as added
+ * only when the total equals the rolling sum. Up to MAX_ATTEMPTS tries per claim; a third
+ * failure (or an unexpected total) stops everything.
+ */
+async function runClaims(tabId, claims, predetermine, options) {
+  let st = await readPageState(tabId, options);
+  let expected = st.total ?? 0;
+  log(`Website total cost before adding: $${dollars(expected)}`);
+  for (let i = 0; i < claims.length; i++) {
+    const c = claims[i];
+    const n = i + 1;
+    const label = `${c.service_date} ${c.service} ${c.hours}h`;
+    const before = expected;
+    expected += Math.round((c.total_cost || 0) * 100);
+    let added = false;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !added; attempt++) {
+      if (state.stopRequested) return { ok: false, added: i, message: `Stopped by you after ${i} of ${claims.length} claims.` };
+      log(`Claim ${n}/${claims.length}: ${label}, attempt ${attempt}/${MAX_ATTEMPTS}`);
+      let result;
+      try {
+        result = await callEngine(tabId, "enter", c, options, 90000);
+      } catch (e) {
+        // Expected on the real site: the page reloaded right after Add claim and cut the call off.
+        log(`  the page reloaded or the call ended (${e.message.split("\n")[0]}); checking the total…`);
+        result = { status: "unknown" };
+      }
+      if (result && result.status === "failed") {
+        log(`  could not enter the claim: ${result.reason}`);
+        if (result.errors && result.errors.length) log(`  the site says: ${result.errors.join(" | ")}`);
+        if (result.form) log(`  ${result.form}`);
+      }
+      // Wait for the site to answer (and reload) and for its total to reach the expected value.
+      let seen = null;
+      const deadline = Date.now() + (result && result.status === "failed" ? 2000 : TOTALS_WAIT_MS);
+      while (Date.now() < deadline) {
+        await sleep(400);
+        try {
+          await waitForLoaded(tabId, 10000);
+          const s = await callEngine(tabId, "state", null, options, 10000);
+          seen = s.total;
+          if (seen === expected) break;
+        } catch (e) { /* mid-reload: try again */ }
+      }
+      if (seen === expected) {
+        log(`  added ${n}/${claims.length}: ${label} (website total now $${dollars(seen)})`);
+        added = true;
+      } else if (seen !== null && seen !== before) {
+        const message = `Stopped at claim ${n} (${label}): the website total is $${dollars(seen)} but $${dollars(expected)} was expected. Check the website before continuing.`;
+        log(message);
+        return { ok: false, added: i, message };
+      } else {
+        let extra = "";
+        try {
+          const s = await readPageState(tabId, options, 5000);
+          if (s.errors && s.errors.length) extra += ` The site says: ${s.errors.join(" | ")}.`;
+          if (s.form) extra += ` Form now holds: ${JSON.stringify(s.form)}.`;
+        } catch (e) { /* ignore */ }
+        log(`  attempt ${attempt}/${MAX_ATTEMPTS} failed: the website total did not change (still ${seen === null ? "none shown" : "$" + dollars(seen)}, wanted $${dollars(expected)}).${extra}`);
+      }
+    }
+    if (!added) {
+      const message = `Stopped: claim ${n} (${label}) failed ${MAX_ATTEMPTS} times. ${i} of ${claims.length} claims were added.`;
+      log(message);
+      return { ok: false, added: i, message };
+    }
+  }
+  let message = `All ${claims.length} claims added; total cost matches ($${dollars(expected)}).`;
+  if (predetermine) {
+    let r;
+    try {
+      r = await callEngine(tabId, "predetermine", null, options, 20000);
+    } catch (e) {
+      r = { clicked: true }; // the click started a page change that cut the call off
+    }
+    if (!r.clicked) {
+      message += ` But ${r.reason}.`;
+      log(message);
+      return { ok: false, added: claims.length, message };
+    }
+    message += " Clicked 'Predetermine'.";
+  }
+  log(message);
+  return { ok: true, added: claims.length, message };
+}
 
 // --- export -----------------------------------------------------------------------------
 $("export").addEventListener("click", () => {
