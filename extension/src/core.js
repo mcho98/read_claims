@@ -238,3 +238,21 @@ export function validateExport(doc) {
   if (!Array.isArray(doc.groups)) throw new Error("The file has no claim groups.");
   return doc;
 }
+
+/**
+ * Which sites the extension may use for an address. The login page and the claim form are often
+ * on different sub-domains (login.ab.bluecross.ca vs provider.ab.bluecross.ca), so a host with
+ * 4 or more labels is widened to its parent domain (*.ab.bluecross.ca). Shorter hosts, IP
+ * addresses and localhost stay exact, so a shared host such as xyz.vercel.app is not widened.
+ * Returns {pattern, label}; pattern is a Chrome match pattern.
+ */
+export function siteScope(address) {
+  const u = new URL(address);
+  const labels = u.hostname.split(".");
+  const isIp = /^\d+(\.\d+){3}$/.test(u.hostname) || u.hostname.includes(":");
+  if (!isIp && labels.length >= 4) {
+    const parent = labels.slice(1).join(".");
+    return { pattern: `${u.protocol}//*.${parent}/*`, label: `*.${parent}` };
+  }
+  return { pattern: `${u.origin}/*`, label: u.host };
+}

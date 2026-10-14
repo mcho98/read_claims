@@ -35,9 +35,14 @@ test("full month for the first client matches out.json", () => {
 
 test("date range keeps only the days inside it", () => {
   const { sheet, clients, columns } = load();
-  const r = core.readClient(sheet, clients[0], columns, core.parseDay("20260810"), core.parseDay("20260815"));
-  assert.equal(r.claims.length, 6);
-  assert.equal(core.buildExport(r, core.groupClaims(r.claims), null, null, "x", "y").totals.total_cost, 408.36);
+  const all = core.readClient(sheet, clients[0], columns).claims;
+  const days = [...new Set(all.map((c) => c.service_date))].sort();
+  assert.ok(days.length >= 4, "the fixture needs at least 4 different days");
+  const [from, to] = [days[1], days[days.length - 2]];
+  const r = core.readClient(sheet, clients[0], columns, core.parseDay(from.replace(/-/g, "")), core.parseDay(to.replace(/-/g, "")));
+  const want = all.filter((c) => c.service_date >= from && c.service_date <= to);
+  assert.ok(want.length > 0 && want.length < all.length);
+  assert.deepEqual(r.claims, want);
 });
 
 test("grouping 15 gives 10 + 5", () => {
@@ -62,4 +67,12 @@ test("dates: YYYYMMDD accepted, short or impossible rejected", () => {
 test("export file name", () => {
   assert.equal(core.exportFilename("John Doe", null, null), "John_Doe.json");
   assert.equal(core.exportFilename("John Doe", { y: 2026, m: 8, d: 10 }, null), "John_Doe_20260810-end.json");
+});
+
+test("site scope widens login/provider sub-domains but not shared hosts", () => {
+  assert.equal(core.siteScope("https://login.ab.bluecross.ca/iamapp/login?x=1").pattern, "https://*.ab.bluecross.ca/*");
+  assert.equal(core.siteScope("https://provider.ab.bluecross.ca/health/x.jspx").pattern, "https://*.ab.bluecross.ca/*");
+  assert.equal(core.siteScope("https://mock-website-theta.vercel.app/").pattern, "https://mock-website-theta.vercel.app/*");
+  assert.equal(core.siteScope("http://127.0.0.1:8765/").pattern, "http://127.0.0.1:8765/*");
+  assert.equal(core.siteScope("http://localhost:3000").pattern, "http://localhost:3000/*");
 });

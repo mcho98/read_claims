@@ -9,6 +9,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -70,6 +71,8 @@ class App(tk.Tk):
         self.url_var = tk.StringVar(value=self.config.get("url") or DEFAULT_URL)
         self.ws = self.clients = self.date_columns = self.result = None
         self.source_path = None
+        self.source = None  # 'xlsx' or 'json'
+        self.sheet_title = ""
         self.range = (None, None)
         self.filler = None
         self.worker = Worker()
@@ -83,6 +86,7 @@ class App(tk.Tk):
         top = ttk.Frame(self)
         top.pack(fill="x", **pad)
         ttk.Button(top, text="1. Choose Excel file...", command=self.choose_file).pack(side="left")
+        ttk.Button(top, text="or open exported JSON...", command=self.open_json).pack(side="left", padx=4)
         self.file_label = ttk.Label(top, text="No file chosen")
         self.file_label.pack(side="left", padx=8)
 
@@ -99,7 +103,9 @@ class App(tk.Tk):
         self.start_var, self.end_var = tk.StringVar(), tk.StringVar()
         for row, (text, var) in enumerate((("From", self.start_var), ("To", self.end_var))):
             ttk.Label(dates, text=text).grid(row=row, column=0, padx=4, pady=2, sticky="w")
-            ttk.Entry(dates, textvariable=var, width=10).grid(row=row, column=1, padx=4, pady=2)
+            entry = ttk.Entry(dates, textvariable=var, width=10)
+            entry.grid(row=row, column=1, padx=4, pady=2)
+            setattr(self, "start_entry" if row == 0 else "end_entry", entry)
             var.trace_add("write", lambda *_: self.on_client_selected())
 
         right = ttk.LabelFrame(mid, text="Claims to enter")
@@ -137,18 +143,24 @@ class App(tk.Tk):
         self.open_btn.pack(side="left")
         self.fill_btn = ttk.Button(bottom, text="4. Fill form", command=self.fill_form, state="disabled")
         self.fill_btn.pack(side="left", padx=8)
+        self.stop_btn = ttk.Button(bottom, text="Stop", command=self.stop_fill)
         self.export_btn = ttk.Button(bottom, text="Export JSON...", command=self.export_json, state="disabled")
         self.export_btn.pack(side="left", padx=8)
         self.first_only = tk.BooleanVar(value=False)
         ttk.Checkbutton(bottom, text="Test: only the first claim", variable=self.first_only).pack(side="left", padx=8)
 
+        logbar = ttk.Frame(self)
+        logbar.pack(fill="x", padx=8)
+        ttk.Button(logbar, text="Copy log", command=self.copy_log).pack(side="left")
+        ttk.Button(logbar, text="Save log...", command=self.save_log).pack(side="left", padx=6)
         self.log_box = tk.Text(self, height=8, state="disabled")
         self.log_box.pack(fill="x", **pad)
         self.log("Start by choosing the Excel file.")
 
     # --- thread-safe logging -------------------------------------------------
     def log(self, text):
-        self.messages.put(text)
+        # FormFiller lines already carry a time stamp; add one to the app's own lines.
+        self.messages.put(text if text.startswith("[") else f"[{time.strftime('%H:%M:%S')}] {text}")
 
     def ui(self, func):
         """Run func on the window's thread (safe to call from the worker)."""
@@ -184,6 +196,10 @@ class App(tk.Tk):
             return
         self.ws, self.clients, self.date_columns = ws, clients, date_columns
         self.source_path = path
+        self.source = "xlsx"
+        self.sheet_title = ws.title
+        self.start_entry.configure(state="normal")
+        self.end_entry.configure(state="normal")
         self.file_label.configure(text=os.path.basename(path))
         self.client_list.delete(0, "end")
         self.client_title.configure(text="No client selected")
@@ -203,6 +219,8 @@ class App(tk.Tk):
         self.update_fill_button()
 
     def on_client_selected(self, _event=None):
+        if self.source != "xlsx":
+            return
         sel = self.client_list.curselection()
         if not sel:
             return
@@ -219,6 +237,10 @@ class App(tk.Tk):
         self.range = (start, end)
         self.result = rc.read_client(self.ws, self.clients[sel[0]], self.date_columns, start, end)
         self.groups = rc.group_claims(self.result["claims"])
+        self.show_result()
+
+    def show_result(self):
+        """Fill the table, group list, summary and problems from self.result / self.groups."""
         for n, group in enumerate(self.groups, 1):
             for c in group:
                 cost = "" if c["total_cost"] is None else f"{c['total_cost']:.2f}"
@@ -291,6 +313,56 @@ class App(tk.Tk):
         exportable = self.result and self.result["claims"] and not self.result["problems"]
         self.export_btn.configure(state="normal" if exportable else "disabled")
 
+    def open_json(self):
+        """Load a file made by 'Export JSON' (this app, the script or the Chrome extension)."""
+        path = filedialog.askopenfilename(title="Choose an exported claims file",
+                                          filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = rc.validate_export(json.load(f))
+        except (OSError, ValueError) as e:
+            messagebox.showerror("Could not read the file", str(e))
+            return
+        self.source, self.source_path, self.sheet_title = "json", path, doc.get("sheet", "")
+        self.ws = None
+        self.file_label.configure(text=f"{os.path.basename(path)} (exported file)")
+        self.client_list.delete(0, "end")
+        self.client_list.insert("end", doc["client"])
+        self.client_list.selection_set(0)
+        self.start_var.set("")
+        self.end_var.set("")
+        self.start_entry.configure(state="disabled")
+        self.end_entry.configure(state="disabled")
+        self.clear_preview()
+        claims = [c for g in doc["groups"] for c in g["claims"]]
+        self.result = {"client": doc["client"], "rate": doc.get("rate"), "claims": claims,
+                       "problems": doc.get("problems") or [], "warnings": doc.get("warnings") or []}
+        self.groups = [g["claims"] for g in doc["groups"]]
+        self.range = (None, None)
+        self.client_title.configure(text=f"1. {doc['client']}")
+        self.show_result()
+        self.log(f"Loaded {len(claims)} claims for {doc['client']} from {os.path.basename(path)}.")
+
+    def copy_log(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.log_box.get("1.0", "end"))
+        self.log("Log copied to the clipboard.")
+
+    def save_log(self):
+        path = filedialog.asksaveasfilename(
+            title="Save log", defaultextension=".txt",
+            initialfile=f"claim-filler-log-{time.strftime('%Y%m%d-%H%M%S')}.txt")
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.log_box.get("1.0", "end"))
+
+    def stop_fill(self):
+        if self.filler:
+            self.filler.stop_requested = True
+            self.log("Stop requested: finishing the current step first...")
+
     def export_json(self):
         """Save the chosen client's claims (after the date range, split into groups) for the extension."""
         start, end = self.range
@@ -302,7 +374,7 @@ class App(tk.Tk):
             return
         try:
             rc.write_export(path, rc.build_export(self.result, self.groups, start, end,
-                                                  self.source_path, self.ws.title))
+                                                  self.source_path, self.sheet_title))
         except OSError as e:
             messagebox.showerror("Could not save", str(e))
             return
@@ -320,6 +392,9 @@ class App(tk.Tk):
                                    + "Check that the browser is showing the Claim details form."):
             return
         self.fill_btn.configure(state="disabled")
+        self.stop_btn.pack(side="left", padx=8)
+        self.log(f"--- Filling {len(claims)} claim(s) for {self.result['client']}{which}"
+                 f"{' (test: first claim only)' if test_only else ''} ---")
 
         def job():
             try:
@@ -330,6 +405,7 @@ class App(tk.Tk):
                     self.log("STOPPED. " + outcome["message"])
             except Exception as e:
                 self.log(f"Stopped: {e}")
+            self.ui(self.stop_btn.pack_forget)
             self.ui(self.update_fill_button)
 
         self.worker.submit(job)

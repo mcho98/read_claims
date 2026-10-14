@@ -70,7 +70,7 @@ TOTAL_COST_PATTERNS = [r"Total cost\s*:\s*\$\s*([\d,]*\.?\d+)", r"(?m)^[ \t]*\$\
 TYPING_DELAY_MS = 30      # pause between keystrokes when typing hours/cost (config key typing_delay_ms)
 FIELD_TRIES = 3           # times a single form box is re-filled if what it holds is not what was typed
 MAX_ATTEMPTS = 3          # tries per claim before giving up for good
-TOTALS_WAIT_SECONDS = 8   # how long to wait for the website totals to update after Add claim (the page reloads)
+TOTALS_WAIT_SECONDS = 15  # how long to wait for the website total to update after Add claim (the page reloads)
 PPR_MIN_PAUSE_MS = 700    # minimum pause after changing the date/service (the site refreshes parts of the form itself)
 PPR_QUIET_MS = 400        # the page must be unchanged this long before typing on
 PPR_MAX_WAIT_MS = 8000    # never wait longer than this for such a refresh
@@ -243,6 +243,17 @@ def build_export(result, groups, start, end, source_file, sheet):
     }
 
 
+def validate_export(doc):
+    """Check a parsed JSON file is a claimfiller export this program understands; return it or raise ValueError."""
+    if not isinstance(doc, dict) or doc.get("format") != EXPORT_FORMAT:
+        raise ValueError("This is not a Claim Filler export file.")
+    if doc.get("version") != EXPORT_VERSION:
+        raise ValueError(f"This file is version {doc.get('version')}; this program understands version {EXPORT_VERSION}.")
+    if not isinstance(doc.get("groups"), list):
+        raise ValueError("The file has no claim groups.")
+    return doc
+
+
 def export_filename(client, start, end):
     """e.g. John_Doe_20260810-20260815.json (dates left out when no range was set)."""
     name = re.sub(r"[^A-Za-z0-9]+", "_", client).strip("_") or "client"
@@ -336,6 +347,7 @@ class FormFiller:
         self._emit = log
         self.pw = self.browser = self.page = self.chrome_proc = None
         self.port = None
+        self.stop_requested = False  # set by the app's Stop button; checked between claims
         self.screenshot_dir = os.path.join(os.getcwd(), "output")  # failure screenshots go in an "output" folder (the app puts it next to the program)
 
     def log(self, text):
@@ -420,9 +432,9 @@ class FormFiller:
                 return Decimal(found[-1].replace(",", "")).quantize(CENT)
         return None
 
-    def wait_for_totals(self, expected):
+    def wait_for_totals(self, expected, seconds=None):
         """Poll until the website totals equal `expected` or the wait runs out; return the last totals seen."""
-        deadline = time.time() + TOTALS_WAIT_SECONDS
+        deadline = time.time() + (TOTALS_WAIT_SECONDS if seconds is None else seconds)
         seen = self.read_totals()
         while seen != expected and time.time() < deadline:
             self.page.wait_for_timeout(250)
@@ -607,6 +619,14 @@ class FormFiller:
         Returns {"ok": bool, "added": n, "message": str}.
         """
         self.attach()
+        self.stop_requested = False
+        # Same pre-flight as the extension: the Claim details form must be on this page.
+        try:
+            form = self.values()
+        except Exception as e:
+            raise RuntimeError("The Claim details form was not found on the page Chrome is showing. "
+                               f"Open the form in the claim website tab and try again. ({str(e).splitlines()[0]})")
+        self.log(f"  form found: {form}")
         start = self.read_totals() or Decimal("0.00")
         expected = start
         self.log(f"  website total cost before adding: ${start}")
@@ -615,13 +635,18 @@ class FormFiller:
             before = expected
             expected = expected + Decimal(str(c["total_cost"] or 0)).quantize(CENT)
             for attempt in range(1, MAX_ATTEMPTS + 1):
+                if self.stop_requested:
+                    msg = f"Stopped by you after {i - 1} of {len(claims)} claims."
+                    self.log(msg)
+                    return {"ok": False, "added": i - 1, "message": msg}
                 problem = None
                 self.log(f"Claim {i}/{len(claims)}: {label}, attempt {attempt}/{MAX_ATTEMPTS}")
                 try:
                     self.enter_claim(c)
                 except Exception as e:
                     problem = f"could not use the form ({str(e).splitlines()[0]})"
-                seen = self.wait_for_totals(expected)
+                # If the form was never submitted there is nothing to wait for (same as the extension).
+                seen = self.wait_for_totals(expected, 2 if problem else None)
                 if seen == expected:
                     self.log(f"  added {i}/{len(claims)}: {label}  (website total now ${seen})")
                     break

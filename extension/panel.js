@@ -187,10 +187,11 @@ function normalizedUrl() {
 }
 
 async function ensurePermission(url) {
-  const origins = [`${url.origin}/*`];
+  const { pattern, label } = core.siteScope(url.href);
+  const origins = [pattern];
   if (await chrome.permissions.contains({ origins })) return;
   if (!(await chrome.permissions.request({ origins }))) {
-    throw new Error(`Permission to use ${url.origin} was not given, so the form cannot be filled.`);
+    throw new Error(`Permission to use ${label} was not given, so the form cannot be filled.`);
   }
 }
 
@@ -257,10 +258,13 @@ async function readPageState(tabId, options, maxWaitMs = 15000) {
 
 /** The tab on the claim website that has the Claim details form open. */
 async function findFormTab(url, options) {
-  const tabs = await chrome.tabs.query({ url: `${url.origin}/*` });
-  if (!tabs.length) throw new Error("The claim website is not open. Click 'Open claim website' first.");
+  const { pattern, label } = core.siteScope(url.href);
+  const tabs = await chrome.tabs.query({ url: pattern });
+  if (!tabs.length) {
+    throw new Error(`No open tab on ${label}. Click 'Open claim website', log in and open the Claim details form in that tab first.`);
+  }
   tabs.sort((a, b) => Number(b.active) - Number(a.active) || (b.lastAccessed || 0) - (a.lastAccessed || 0));
-  log(`Found ${tabs.length} tab(s) on ${url.origin}.`);
+  log(`Found ${tabs.length} tab(s) on ${label}.`);
   let lastMissing = [];
   for (const tab of tabs) {
     log(`Checking tab ${tab.id} (${tab.title || tab.url}) for the Claim details form…`);
