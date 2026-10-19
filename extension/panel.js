@@ -83,7 +83,7 @@ $("jsonfile").addEventListener("change", async (e) => {
       claims: doc.groups.flatMap((g) => g.claims),
       problems: doc.problems || [], warnings: doc.warnings || [],
     };
-    state.groups = doc.groups.map((g) => g.claims);
+    state.groups = core.groupsFromExport(doc);
     state.range = [null, null];
     renderPreview();
     log(`Loaded ${state.result.claims.length} claims for ${doc.client} from ${file.name}.`);
@@ -137,31 +137,38 @@ $("end").addEventListener("input", onClientOrRangeChanged);
 function renderPreview() {
   const { result, groups } = state;
   $("clientTitle").textContent = `${$("clients").selectedIndex + 1}. ${result.client}`;
-  const rows = [];
-  groups.forEach((group, n) => {
-    for (const c of group) {
-      const tr = document.createElement("tr");
-      const cells = [n + 1, c.service_date, c.service, c.hours, c.total_cost === null ? "" : c.total_cost.toFixed(2)];
-      cells.forEach((v, i) => {
-        const td = document.createElement("td");
-        td.textContent = String(v);
-        if (i >= 3) td.className = "num";
-        tr.append(td);
-      });
-      rows.push(tr);
-    }
-  });
-  $("claims").tBodies[0].replaceChildren(...rows);
   const group = $("group");
   group.replaceChildren(...groups.map((_, i) => new Option(core.groupLabel(groups, i + 1), String(i))));
   group.disabled = groups.length < 2;
-  const hours = result.claims.reduce((a, c) => a + c.hours, 0);
-  const cost = result.claims.reduce((a, c) => a + (c.total_cost || 0), 0);
-  $("summary").textContent = `${result.claims.length} claims, ${+hours.toFixed(2)} hours, $${cost.toFixed(2)}` +
-    (result.rate ? `   (rate $${result.rate}/hr)` : "");
   $("problems").textContent = [...result.problems, ...result.warnings].join("\n");
+  renderGroup();
+}
+
+/** Table and summary for the selected group only (the website takes one group at a time). */
+function renderGroup() {
+  const { result, groups } = state;
+  const index = Math.max(0, $("group").selectedIndex);
+  const info = groups[index];
+  const claims = info ? info.claims : [];
+  const rows = claims.map((c) => {
+    const tr = document.createElement("tr");
+    [info.number, c.service_date, c.service, c.hours, c.total_cost === null ? "" : c.total_cost.toFixed(2)].forEach((v, i) => {
+      const td = document.createElement("td");
+      td.textContent = String(v);
+      if (i >= 3) td.className = "num";
+      tr.append(td);
+    });
+    return tr;
+  });
+  $("claims").tBodies[0].replaceChildren(...rows);
+  const hours = claims.reduce((a, c) => a + c.hours, 0);
+  const cost = claims.reduce((a, c) => a + (c.total_cost || 0), 0);
+  const where = info ? `${core.groupTitle(info)}: ` : "";
+  $("summary").textContent = `${where}${claims.length} claims, ${+hours.toFixed(2)} hours, $${cost.toFixed(2)}` +
+    (result.rate ? `   (rate $${result.rate}/hr)` : "");
   updateButtons();
 }
+$("group").addEventListener("change", renderGroup);
 
 function updateButtons() {
   const r = state.result;
@@ -302,10 +309,11 @@ $("fill").addEventListener("click", async () => {
     alert(err.message);
     return;
   }
-  const group = state.groups[$("group").selectedIndex] || [];
+  const info = state.groups[$("group").selectedIndex];
+  const group = info ? info.claims : [];
   const testOnly = $("firstOnly").checked;
   const claims = testOnly ? group.slice(0, 1) : group;
-  const which = state.groups.length > 1 ? ` (Group ${$("group").selectedIndex + 1})` : "";
+  const which = info ? ` (${core.groupTitle(info)})` : "";
   const note = testOnly
     ? "This is a test, so 'Predetermine' will NOT be clicked."
     : "When every claim is added and the totals match, 'Predetermine' will be clicked.";

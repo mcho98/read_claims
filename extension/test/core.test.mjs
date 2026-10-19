@@ -45,10 +45,22 @@ test("date range keeps only the days inside it", () => {
   assert.deepEqual(r.claims, want);
 });
 
-test("grouping 15 gives 10 + 5", () => {
-  const groups = core.groupClaims(Array.from({ length: 15 }, (_, i) => i));
-  assert.deepEqual(groups.map((g) => g.length), [10, 5]);
-  assert.equal(core.groupLabel(groups, 2), "Group 2 of 2 (claims 11-15)");
+test("groups are fixed day-of-month ranges, empty ones are left out", () => {
+  const claim = (day) => ({ service_date: `2026-10-${String(day).padStart(2, "0")}` });
+  const days = [1, 2, 4, 10, 11, 15, 16, 17, 25, 26, 31]; // day 3 has no claim
+  const groups = core.groupClaims(days.map(claim));
+  assert.deepEqual(groups.map((g) => [g.number, g.days, g.claims.length]),
+    [[1, "1-10", 4], [2, "11-15", 2], [3, "16-25", 3], [4, "26-end", 2]]);
+  // a custom range of days 7-17 leaves three groups
+  const picked = core.groupClaims([7, 9, 12, 14, 16, 17].map(claim));
+  assert.deepEqual(picked.map((g) => g.number), [1, 2, 3]);
+  assert.equal(core.groupLabel(groups, 2), "Group 2 (days 11-15): 2 claims");
+});
+
+test("a day range with more than 10 claims is split into parts", () => {
+  const groups = core.groupClaims(Array.from({ length: 12 }, () => ({ service_date: "2026-10-03" })));
+  assert.deepEqual(groups.map((g) => [g.number, g.part, g.parts, g.claims.length]), [[1, 1, 2, 10], [1, 2, 2, 2]]);
+  assert.equal(core.groupTitle(groups[1]), "Group 1 (days 1-10) - part 2 of 2");
 });
 
 test("money rounds half up like Python", () => {

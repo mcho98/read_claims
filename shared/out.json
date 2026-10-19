@@ -1,7 +1,7 @@
 {
   "format": "claimfiller-claims",
-  "version": 1,
-  "generated_at": "2026-10-14T16:59:28-06:00",
+  "version": 2,
+  "generated_at": "2026-10-19T15:40:27-06:00",
   "source_file": "mock_data.xlsx",
   "sheet": "Sheet1",
   "client": "John Doe",
@@ -21,6 +21,9 @@
   "groups": [
     {
       "group": 1,
+      "days": "1-10",
+      "part": 1,
+      "parts": 1,
       "claims": [
         {
           "service_date": "2026-10-01",
@@ -96,6 +99,9 @@
     },
     {
       "group": 2,
+      "days": "11-15",
+      "part": 1,
+      "parts": 1,
       "claims": [
         {
           "service_date": "2026-10-11",

@@ -200,24 +200,56 @@ def read_client(ws, client, date_columns, start=None, end=None):
             "problems": problems, "warnings": warnings}
 
 
+# Groups are fixed by day of the month, not by how many claims there are. Days with no
+# claims are simply absent, so a group often holds fewer than 10 claims.
+GROUP_DAY_RANGES = [(1, 10), (11, 15), (16, 25), (26, 31)]
+
+
 def group_claims(claims, size=MAX_CLAIMS_PER_GROUP):
-    """Split claims into consecutive groups of at most `size` (15 -> 10 + 5)."""
-    return [claims[i:i + size] for i in range(0, len(claims), size)]
+    """Group claims by day of the month: days 1-10, 11-15, 16-25 and 26-end of month.
+
+    Only groups that have claims are returned, each as
+    {"number": 1-4, "days": "1-10", "part": 1, "parts": 1, "claims": [...]}.
+    The website takes at most `size` claims at a time, so a day range holding more than that
+    (several services per day) is split into consecutive parts rather than overflowing.
+    """
+    groups = []
+    for number, (low, high) in enumerate(GROUP_DAY_RANGES, 1):
+        inside = [c for c in claims if low <= int(c["service_date"][8:10]) <= high]
+        chunks = [inside[i:i + size] for i in range(0, len(inside), size)]
+        for part, chunk in enumerate(chunks, 1):
+            days = f"{low}-end" if high == 31 else f"{low}-{high}"
+            groups.append({"number": number, "days": days, "part": part, "parts": len(chunks), "claims": chunk})
+    return groups
+
+
+def group_title(group):
+    """'Group 2 (days 11-15)', with ' - part 1 of 2' when a day range had to be split."""
+    title = f"Group {group['number']} (days {group['days']})"
+    if group["parts"] > 1:
+        title += f" - part {group['part']} of {group['parts']}"
+    return title
 
 
 def group_label(groups, n):
-    """Human text for group n (1-based), e.g. 'Group 2 of 2 (claims 11-15)'."""
-    start = sum(len(g) for g in groups[:n - 1]) + 1
-    return f"Group {n} of {len(groups)} (claims {start}-{start + len(groups[n - 1]) - 1})"
+    """Text for group n (1-based) in a list, e.g. 'Group 2 (days 11-15): 5 claims'."""
+    g = groups[n - 1]
+    return f"{group_title(g)}: {len(g['claims'])} claims"
+
+
+def groups_from_export(doc):
+    """The groups of an exported file, in the same shape group_claims() returns."""
+    return [{"number": g.get("group", i), "days": g.get("days", ""), "part": g.get("part", 1),
+             "parts": g.get("parts", 1), "claims": g["claims"]} for i, g in enumerate(doc["groups"], 1)]
 
 
 EXPORT_FORMAT = "claimfiller-claims"
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2  # 2: groups are fixed day-of-month ranges and carry days/part/parts
 
 
 def build_export(result, groups, start, end, source_file, sheet):
     """The JSON document the Chrome extension will import: one client, optional date range,
-    claims already split into groups of at most MAX_CLAIMS_PER_GROUP. Bump EXPORT_VERSION
+    claims already grouped by day of the month (see group_claims). Bump EXPORT_VERSION
     when the shape changes so the extension can refuse files it does not understand."""
     claims = result["claims"]
     return {
@@ -236,10 +268,10 @@ def build_export(result, groups, start, end, source_file, sheet):
                    "total_cost": to_money(sum(Decimal(str(c["total_cost"] or 0)) for c in claims))},
         "problems": result["problems"],   # the extension must refuse to fill when this is not empty
         "warnings": result["warnings"],
-        "groups": [{"group": n, "claims": [
+        "groups": [{"group": g["number"], "days": g["days"], "part": g["part"], "parts": g["parts"], "claims": [
             {"service_date": c["service_date"], "service": c["service"], "hours": c["hours"],
-             "total_cost": c["total_cost"], "cell": c["cell"]} for c in group]}
-            for n, group in enumerate(groups, 1)],
+             "total_cost": c["total_cost"], "cell": c["cell"]} for c in g["claims"]]}
+            for g in groups],
     }
 
 
@@ -756,7 +788,7 @@ def process_client(ws, client, date_columns, args, session):
     default = "f" if args.first_only else "a"
     while True:
         if len(groups) > 1:
-            print(f"The website takes {MAX_CLAIMS_PER_GROUP} claims at a time, so these are split into groups:")
+            print("Claims are grouped by day of the month (days 1-10, 11-15, 16-25, 26-end):")
             for n in range(1, len(groups) + 1):
                 print(f"  {n}. {group_label(groups, n)}")
             pick = input(f"Which group? [1-{len(groups)}, Enter = 1, b = back to the client list] ").strip().lower() or "1"
@@ -765,9 +797,9 @@ def process_client(ws, client, date_columns, args, session):
             if not (pick.isdigit() and 1 <= int(pick) <= len(groups)):
                 print("Please type one of the group numbers.")
                 continue
-            group = groups[int(pick) - 1]
+            group = groups[int(pick) - 1]["claims"]
         else:
-            group = groups[0]
+            group = groups[0]["claims"]
         answer = input(f"Enter [a]ll {len(group)} claims (then click '{BUTTON_PREDETERMINE}'), "
                        f"[f]irst only (test, no '{BUTTON_PREDETERMINE}'), or [b]ack? [{default}] ").strip().lower() or default
         if answer in ("a", "f"):

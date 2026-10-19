@@ -40,10 +40,10 @@ today = dt.date.today()
 claims = [{"service_date": (today - dt.timedelta(days=3 - i)).isoformat(), "service": s, "hours": h, "total_cost": c, "cell": "X"}
           for i, (s, h, c) in enumerate([("Personal Care", 4, 136.12), ("Homemaking", 3.5, 119.11),
                                           ("Respite", 2, 68.06), ("Personal Care", 1.53, 52.07)])]
-doc = {"format": "claimfiller-claims", "version": 1, "generated_at": "x", "source_file": "t.xlsx", "sheet": "S",
+doc = {"format": "claimfiller-claims", "version": 2, "generated_at": "x", "source_file": "t.xlsx", "sheet": "S",
        "client": "Test Client", "rate": 34.03, "date_range": {"start": None, "end": None},
        "max_claims_per_group": 10, "totals": {}, "problems": [], "warnings": [],
-       "groups": [{"group": 1, "claims": claims}]}
+       "groups": [{"group": 1, "days": "1-10", "part": 1, "parts": 1, "claims": claims}]}
 doc_path = work / "export.json"
 doc_path.write_text(json.dumps(doc))
 

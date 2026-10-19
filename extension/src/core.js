@@ -14,7 +14,7 @@ export const RATE_LABEL = "rate $/hr";
 export const MAX_HOURS_PER_DAY = 24;
 export const MAX_CLAIMS_PER_GROUP = 10; // the website accepts at most this many claims at a time
 export const EXPORT_FORMAT = "claimfiller-claims";
-export const EXPORT_VERSION = 1;
+export const EXPORT_VERSION = 2; // 2: groups are fixed day-of-month ranges and carry days/part/parts
 
 const pad = (n, w = 2) => String(n).padStart(w, "0");
 const iso = (d) => `${pad(d.y, 4)}-${pad(d.m)}-${pad(d.d)}`;
@@ -179,17 +179,53 @@ export function readClient(sheet, client, dateColumns, start = null, end = null)
   return { client: client.name, rate, claims, problems, warnings };
 }
 
-/** Split into consecutive groups of at most `size` (15 -> 10 + 5). */
+// Groups are fixed by day of the month, not by how many claims there are. Days with no claims
+// are simply absent, so a group often holds fewer than 10 claims.
+export const GROUP_DAY_RANGES = [[1, 10], [11, 15], [16, 25], [26, 31]];
+
+/**
+ * Group claims by day of the month: days 1-10, 11-15, 16-25 and 26-end of month. Only groups that
+ * have claims are returned, each as {number: 1-4, days: "1-10", part, parts, claims}. The website
+ * takes at most `size` claims at a time, so a day range holding more than that (several services
+ * per day) is split into consecutive parts rather than overflowing.
+ */
 export function groupClaims(claims, size = MAX_CLAIMS_PER_GROUP) {
   const groups = [];
-  for (let i = 0; i < claims.length; i += size) groups.push(claims.slice(i, i + size));
+  GROUP_DAY_RANGES.forEach(([low, high], i) => {
+    const inside = claims.filter((c) => {
+      const day = Number(c.service_date.slice(8, 10));
+      return day >= low && day <= high;
+    });
+    const parts = Math.ceil(inside.length / size);
+    for (let p = 0; p < parts; p++) {
+      groups.push({
+        number: i + 1,
+        days: high === 31 ? `${low}-end` : `${low}-${high}`,
+        part: p + 1,
+        parts,
+        claims: inside.slice(p * size, (p + 1) * size),
+      });
+    }
+  });
   return groups;
 }
 
-/** "Group 2 of 2 (claims 11-15)" for group n (1-based). */
+/** "Group 2 (days 11-15)", with " - part 1 of 2" when a day range had to be split. */
+export function groupTitle(group) {
+  return `Group ${group.number} (days ${group.days})` + (group.parts > 1 ? ` - part ${group.part} of ${group.parts}` : "");
+}
+
+/** Text for group n (1-based) in a list, e.g. "Group 2 (days 11-15): 5 claims". */
 export function groupLabel(groups, n) {
-  const start = groups.slice(0, n - 1).reduce((a, g) => a + g.length, 0) + 1;
-  return `Group ${n} of ${groups.length} (claims ${start}-${start + groups[n - 1].length - 1})`;
+  const g = groups[n - 1];
+  return `${groupTitle(g)}: ${g.claims.length} claims`;
+}
+
+/** The groups of an exported file, in the same shape groupClaims() returns. */
+export function groupsFromExport(doc) {
+  return doc.groups.map((g, i) => ({
+    number: g.group ?? i + 1, days: g.days ?? "", part: g.part ?? 1, parts: g.parts ?? 1, claims: g.claims,
+  }));
 }
 
 /** The same document python-app writes with --json (format claimfiller-claims, version 1). */
@@ -212,9 +248,12 @@ export function buildExport(result, groups, start, end, sourceFile, sheetTitle, 
     },
     problems: result.problems,
     warnings: result.warnings,
-    groups: groups.map((g, i) => ({
-      group: i + 1,
-      claims: g.map((c) => ({ service_date: c.service_date, service: c.service, hours: c.hours, total_cost: c.total_cost, cell: c.cell })),
+    groups: groups.map((g) => ({
+      group: g.number,
+      days: g.days,
+      part: g.part,
+      parts: g.parts,
+      claims: g.claims.map((c) => ({ service_date: c.service_date, service: c.service, hours: c.hours, total_cost: c.total_cost, cell: c.cell })),
     })),
   };
 }

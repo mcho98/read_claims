@@ -121,7 +121,7 @@ class App(tk.Tk):
         self.table.pack(fill="both", expand=True, padx=4, pady=4)
         grp = ttk.Frame(right)
         grp.pack(fill="x", padx=4)
-        ttk.Label(grp, text="Group to fill (website takes 10 at a time):").pack(side="left")
+        ttk.Label(grp, text="Group to fill (by day of the month):").pack(side="left")
         self.group_var = tk.StringVar()
         self.group_box = ttk.Combobox(grp, textvariable=self.group_var, state="disabled", width=30)
         self.group_box.pack(side="left", padx=6)
@@ -240,21 +240,32 @@ class App(tk.Tk):
         self.show_result()
 
     def show_result(self):
-        """Fill the table, group list, summary and problems from self.result / self.groups."""
-        for n, group in enumerate(self.groups, 1):
-            for c in group:
-                cost = "" if c["total_cost"] is None else f"{c['total_cost']:.2f}"
-                self.table.insert("", "end", values=(n, c["service_date"], c["service"], f"{c['hours']:g}", cost))
+        """Set up the group list and problems from self.result / self.groups, then show the first group."""
         if self.groups:
             labels = [rc.group_label(self.groups, n) for n in range(1, len(self.groups) + 1)]
             self.group_box.configure(values=labels, state="readonly" if len(labels) > 1 else "disabled")
             self.group_var.set(labels[0])
-        hours = sum(c["hours"] for c in self.result["claims"])
-        cost = sum(c["total_cost"] or 0 for c in self.result["claims"])
-        self.summary.configure(text=f"{len(self.result['claims'])} claims, {hours:g} hours, ${cost:,.2f}   "
-                                    f"(rate ${self.result['rate']}/hr)")
         self.problems.configure(text="\n".join(self.result["problems"] + self.result["warnings"]))
+        self.show_group()
+
+    def show_group(self):
+        """Table and summary for the selected group only (the website takes one group at a time)."""
+        self.table.delete(*self.table.get_children())
+        info = self.selected_info()
+        group = info["claims"] if info else []
+        number = info["number"] if info else 0
+        for c in group:
+            cost = "" if c["total_cost"] is None else f"{c['total_cost']:.2f}"
+            self.table.insert("", "end", values=(number, c["service_date"], c["service"], f"{c['hours']:g}", cost))
+        hours = round(sum(c["hours"] for c in group), 2)
+        cost = sum(c["total_cost"] or 0 for c in group)
+        where = f"{rc.group_title(info)}: " if info else ""
+        rate = f"   (rate ${self.result['rate']}/hr)" if self.result["rate"] else ""
+        self.summary.configure(text=f"{where}{len(group)} claims, {hours:g} hours, ${cost:,.2f}{rate}")
         self.update_fill_button()
+
+    def on_group_selected(self):
+        self.show_group()
 
     def open_site(self):
         url = self.url_var.get().strip()
@@ -288,15 +299,17 @@ class App(tk.Tk):
 
         self.worker.submit(job)
 
-    def on_group_selected(self):
-        self.update_fill_button()
-
-    def selected_group(self):
-        """The claims of the group chosen in the drop-down (the only group if there is one)."""
+    def selected_info(self):
+        """The group chosen in the drop-down ({"number", "days", "part", "parts", "claims"}), or None."""
         labels = list(self.group_box.cget("values"))
         if not self.groups or self.group_var.get() not in labels:
-            return []
+            return None
         return self.groups[labels.index(self.group_var.get())]
+
+    def selected_group(self):
+        """The claims of the group chosen in the drop-down."""
+        info = self.selected_info()
+        return info["claims"] if info else []
 
     def remember_url(self, url):
         """Save the address in config.json so it is pre-filled next time (best effort)."""
@@ -339,7 +352,7 @@ class App(tk.Tk):
         claims = [c for g in doc["groups"] for c in g["claims"]]
         self.result = {"client": doc["client"], "rate": doc.get("rate"), "claims": claims,
                        "problems": doc.get("problems") or [], "warnings": doc.get("warnings") or []}
-        self.groups = [g["claims"] for g in doc["groups"]]
+        self.groups = rc.groups_from_export(doc)
         self.range = (None, None)
         self.client_title.configure(text=f"1. {doc['client']}")
         self.show_result()
@@ -384,7 +397,8 @@ class App(tk.Tk):
         group = self.selected_group()
         test_only = self.first_only.get()
         claims = group[:1] if test_only else group
-        which = f" ({self.group_var.get().split(' (')[0]})" if len(self.groups) > 1 else ""
+        info = self.selected_info()
+        which = f" ({rc.group_title(info)})" if info else ""
         if not messagebox.askyesno("Fill form",
                                    f"Enter {len(claims)} claim(s) for {self.result['client']}{which}?\n\n"
                                    + ("This is a test, so 'Predetermine' will NOT be clicked.\n\n" if test_only else
