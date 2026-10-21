@@ -92,9 +92,9 @@ class App(tk.Tk):
 
         mid = ttk.Frame(self)
         mid.pack(fill="both", expand=True, **pad)
-        left = ttk.LabelFrame(mid, text="2. Client")
+        left = ttk.LabelFrame(mid, text="2. Choose Client (Family # - Client # - Name)")
         left.pack(side="left", fill="y")
-        self.client_list = tk.Listbox(left, width=24, exportselection=False)
+        self.client_list = tk.Listbox(left, width=34, exportselection=False)
         self.client_list.pack(fill="y", expand=True, padx=4, pady=4)
         self.client_list.bind("<<ListboxSelect>>", self.on_client_selected)
 
@@ -225,7 +225,7 @@ class App(tk.Tk):
         if not sel:
             return
         self.clear_preview()
-        self.client_title.configure(text=f"{sel[0] + 1}. {self.clients[sel[0]]['name']}")
+        self.client_title.configure(text=self.clients[sel[0]]["name"])
         try:
             start, end = rc.parse_day(self.start_var.get()), rc.parse_day(self.end_var.get())
         except ValueError as e:
@@ -350,11 +350,13 @@ class App(tk.Tk):
         self.end_entry.configure(state="disabled")
         self.clear_preview()
         claims = [c for g in doc["groups"] for c in g["claims"]]
-        self.result = {"client": doc["client"], "rate": doc.get("rate"), "claims": claims,
+        self.result = {"client": doc["client"], "client_name": doc.get("client_name", doc["client"]),
+                       "family_number": doc.get("family_number"), "client_number": doc.get("client_number"),
+                       "rate": doc.get("rate"), "claims": claims,
                        "problems": doc.get("problems") or [], "warnings": doc.get("warnings") or []}
         self.groups = rc.groups_from_export(doc)
         self.range = (None, None)
-        self.client_title.configure(text=f"1. {doc['client']}")
+        self.client_title.configure(text=doc["client"])
         self.show_result()
         self.log(f"Loaded {len(claims)} claims for {doc['client']} from {os.path.basename(path)}.")
 

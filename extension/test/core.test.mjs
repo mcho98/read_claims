@@ -26,7 +26,7 @@ function load() {
 test("full month for the first client matches out.json", () => {
   const expected = JSON.parse(readFileSync(shared("out.json"), "utf8"));
   const { sheet, clients, columns } = load();
-  assert.equal(clients.length, 1);
+  assert.equal(clients.length, 3);
   const result = core.readClient(sheet, clients[0], columns);
   const doc = core.buildExport(result, core.groupClaims(result.claims), null, null, "mock_data.xlsx", sheet.title);
   for (const d of [doc, expected]) delete d.generated_at;
@@ -87,4 +87,29 @@ test("site scope widens login/provider sub-domains but not shared hosts", () => 
   assert.equal(core.siteScope("https://mock-website-theta.vercel.app/").pattern, "https://mock-website-theta.vercel.app/*");
   assert.equal(core.siteScope("http://127.0.0.1:8765/").pattern, "http://127.0.0.1:8765/*");
   assert.equal(core.siteScope("http://localhost:3000").pattern, "http://localhost:3000/*");
+});
+
+test("client menu text is 'family - client number - name' from the mock workbook", () => {
+  const { clients } = load();
+  assert.deepEqual(clients.map((c) => c.name), ["1 - 1 - John Doe", "4 - 5 - Albert Albertson", "5 - 6 - Bob Barker"]);
+  assert.deepEqual(clients.map((c) => [c.familyNumber, c.clientNumber]), [[1, 1], [4, 5], [5, 6]]);
+});
+
+/** A tiny fake sheet: cells given as {"B3": 1, ...}. */
+function fakeSheet(cells) {
+  const letters = (s) => s.charCodeAt(0) - 64;
+  const map = new Map(Object.entries(cells).map(([k, v]) => [`${k.match(/\d+/)[0]}:${letters(k[0])}`, v]));
+  return { maxRow: 12, maxCol: 6, get: (r, c) => map.get(`${r}:${c}`) };
+}
+
+test("the name is only taken from next to 'Client Name' (leading number removed); the cell next to the client number is ignored", () => {
+  for (const next of [undefined, 123123, "Zed Zebra"]) {
+    const sheet = fakeSheet({ A2: "Family Number", B2: "Client Number", A3: 4, B3: 5, C3: next, B5: "Client Name", C5: "4 Albert Albertson" });
+    assert.equal(core.findClients(sheet)[0].name, "4 - 5 - Albert Albertson");
+  }
+});
+
+test("sheets without the number headers show the plain name", () => {
+  const sheet = fakeSheet({ B5: "Client Name", C5: "3 Jane Roe" });
+  assert.equal(core.findClients(sheet)[0].name, "Jane Roe");
 });

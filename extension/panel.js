@@ -60,7 +60,7 @@ $("file").addEventListener("change", async (e) => {
   }
   $("fileName").textContent = file.name;
   const list = $("clients");
-  list.replaceChildren(...state.clients.map((c, i) => new Option(`${i + 1}. ${c.name}`, String(i))));
+  list.replaceChildren(...state.clients.map((c, i) => new Option(c.name, String(i))));
   $("start").disabled = $("end").disabled = false;
   clearPreview();
   log(`Found ${state.clients.length} client(s). Pick one from the list.`);
@@ -74,12 +74,13 @@ $("jsonfile").addEventListener("change", async (e) => {
     const doc = core.validateExport(JSON.parse(await file.text()));
     Object.assign(state, { source: "json", fileName: file.name, sheet: null, clients: [], dateColumns: [], doc });
     $("fileName").textContent = `${file.name} (exported file)`;
-    $("clients").replaceChildren(new Option(`1. ${doc.client}`, "0"));
+    $("clients").replaceChildren(new Option(doc.client, "0"));
     $("clients").selectedIndex = 0;
     $("start").value = $("end").value = "";
     $("start").disabled = $("end").disabled = true;
     state.result = {
-      client: doc.client, rate: doc.rate,
+      client: doc.client, clientName: doc.client_name ?? doc.client,
+      familyNumber: doc.family_number ?? null, clientNumber: doc.client_number ?? null, rate: doc.rate,
       claims: doc.groups.flatMap((g) => g.claims),
       problems: doc.problems || [], warnings: doc.warnings || [],
     };
@@ -111,7 +112,7 @@ function onClientOrRangeChanged() {
   if (index < 0) return;
   clearPreview();
   const client = state.clients[index];
-  $("clientTitle").textContent = `${index + 1}. ${client.name}`;
+  $("clientTitle").textContent = client.name;
   let start, end;
   try {
     start = core.parseDay($("start").value);
@@ -136,7 +137,7 @@ $("end").addEventListener("input", onClientOrRangeChanged);
 
 function renderPreview() {
   const { result, groups } = state;
-  $("clientTitle").textContent = `${$("clients").selectedIndex + 1}. ${result.client}`;
+  $("clientTitle").textContent = result.client;
   const group = $("group");
   group.replaceChildren(...groups.map((_, i) => new Option(core.groupLabel(groups, i + 1), String(i))));
   group.disabled = groups.length < 2;

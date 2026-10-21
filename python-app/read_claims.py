@@ -121,18 +121,71 @@ def find_date_columns(ws):
     sys.exit("Could not find the date row (no date cell in the first 20 rows).")
 
 
+FAMILY_LABEL = "family number"
+CLIENT_NUMBER_LABEL = "client number"
+
+
+def find_number_columns(ws):
+    """Columns holding the family numbers and client numbers: found from the 'Family Number' /
+    'Client Number' header cells near the top. Returns (family_col, client_col); either may be None."""
+    family = client = None
+    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 20)):
+        for cell in row:
+            label = norm(cell.value)
+            if label == FAMILY_LABEL and family is None:
+                family = cell.column
+            elif label == CLIENT_NUMBER_LABEL and client is None:
+                client = cell.column
+    return family, client
+
+
+def whole(value):
+    """A cell's number as an int when it is a whole number, else None (text and blanks are not numbers)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if float(value).is_integer() else None
+
+
+def strip_leading_number(text):
+    """'1 John Doe' -> 'John Doe' (the sheet puts the number in front of the name)."""
+    return re.sub(r"^\s*\d+[\s.:)\-]*", "", str(text)).strip()
+
+
 def find_clients(ws):
-    """Return a list of client sections: name, first row, last row."""
+    """Return a list of client sections: name, first row, last row.
+
+    `name` is the text shown in menus: 'family number - client number - name', e.g. '4 - 5 - Albert
+    Albertson', so joint clients of one family sit together and are easy to tell apart. The numbers
+    sit in a row just above each 'Client Name' label (family number and client number under the
+    'Family Number' / 'Client Number' headers). The name is only ever the text right next to the
+    'Client Name' label, with its leading number removed ('1 John Doe' -> 'John Doe'); the cell
+    next to the client number is not read. Sheets without those headers show the name only.
+    """
+    family_col, client_col = find_number_columns(ws)
     starts = []
     for row in ws.iter_rows():
         for cell in row:
             if norm(cell.value) == CLIENT_LABEL:
-                name = ws.cell(cell.row, cell.column + 1).value
-                starts.append((cell.row, str(name).strip() if name else f"(unnamed, row {cell.row})"))
+                starts.append((cell.row, cell.column, ws.cell(cell.row, cell.column + 1).value))
     clients = []
-    for i, (row, name) in enumerate(starts):
+    for i, (label_row, label_col, raw_name) in enumerate(starts):
+        floor = starts[i - 1][0] + 1 if i else 1  # do not read into the previous client's own rows
+        family = number = None
+        for r in range(label_row - 1, max(floor, label_row - 6) - 1, -1):
+            fam = whole(ws.cell(r, family_col).value) if family_col else None
+            num = whole(ws.cell(r, client_col).value) if client_col else None
+            if fam is not None or num is not None:
+                family, number = fam, num
+                break
+        name = strip_leading_number(raw_name) if raw_name not in (None, "") else ""
+        if not name:
+            name = f"(unnamed, row {label_row})"
+        label = name
+        if family is not None or number is not None:
+            label = f"{family if family is not None else '?'} - {number if number is not None else '?'} - {name}"
         end = starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row
-        clients.append({"name": name, "first_row": row, "last_row": end})
+        clients.append({"name": label, "plain_name": name, "family_number": family, "client_number": number,
+                        "first_row": label_row, "last_row": end})
     return clients
 
 
@@ -196,8 +249,9 @@ def read_client(ws, client, date_columns, start=None, end=None):
                 "cell": where,
             })
     claims.sort(key=lambda c: (c["service_date"], c["service"]))
-    return {"client": client["name"], "rate": rate, "claims": claims,
-            "problems": problems, "warnings": warnings}
+    return {"client": client["name"], "client_name": client.get("plain_name", client["name"]),
+            "family_number": client.get("family_number"), "client_number": client.get("client_number"),
+            "rate": rate, "claims": claims, "problems": problems, "warnings": warnings}
 
 
 # Groups are fixed by day of the month, not by how many claims there are. Days with no
@@ -259,6 +313,9 @@ def build_export(result, groups, start, end, source_file, sheet):
         "source_file": os.path.basename(source_file),
         "sheet": sheet,
         "client": result["client"],
+        "client_name": result.get("client_name", result["client"]),
+        "family_number": result.get("family_number"),
+        "client_number": result.get("client_number"),
         "rate": result["rate"],
         "date_range": {"start": start.isoformat() if start else None,
                        "end": end.isoformat() if end else None},

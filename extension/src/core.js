@@ -86,22 +86,69 @@ export function findDateColumns(sheet) {
   throw new Error("Could not find the date row (no date cell in the first 20 rows).");
 }
 
-/** [{name, firstRow, lastRow}] one per "Client Name" label. */
+export const FAMILY_LABEL = "family number";
+export const CLIENT_NUMBER_LABEL = "client number";
+
+/** Columns holding the family numbers and client numbers, found from the header cells near the top. */
+function findNumberColumns(sheet) {
+  let family = null, client = null;
+  for (let row = 1; row <= Math.min(sheet.maxRow, 20); row++) {
+    for (let col = 1; col <= sheet.maxCol; col++) {
+      const label = norm(sheet.get(row, col));
+      if (label === FAMILY_LABEL && family === null) family = col;
+      else if (label === CLIENT_NUMBER_LABEL && client === null) client = col;
+    }
+  }
+  return { family, client };
+}
+
+/** A cell's number when it is a whole number, else null (text and blanks are not numbers). */
+const whole = (v) => (typeof v === "number" && Number.isInteger(v) ? v : null);
+
+/** "1 John Doe" -> "John Doe" (the sheet puts the number in front of the name). */
+export const stripLeadingNumber = (text) => String(text).replace(/^\s*\d+[\s.:)-]*/, "").trim();
+
+/**
+ * [{name, plainName, familyNumber, clientNumber, firstRow, lastRow}], one per "Client Name" label.
+ * `name` is what menus show: "family number - client number - name", e.g. "4 - 5 - Albert Albertson",
+ * so joint clients of one family sit together and are easy to tell apart. The numbers sit in a row
+ * just above each "Client Name" label, under the "Family Number" / "Client Number" headers. The
+ * name is only ever the text right next to the "Client Name" label, with its leading number removed
+ * ("1 John Doe" -> "John Doe"); the cell next to the client number is not read. Sheets without
+ * those headers show the name only.
+ */
 export function findClients(sheet) {
+  const { family: familyCol, client: clientCol } = findNumberColumns(sheet);
   const starts = [];
   for (let row = 1; row <= sheet.maxRow; row++) {
     for (let col = 1; col <= sheet.maxCol; col++) {
-      if (norm(sheet.get(row, col)) === CLIENT_LABEL) {
-        const name = sheet.get(row, col + 1);
-        starts.push({ row, name: name ? String(name).trim() : `(unnamed, row ${row})` });
-      }
+      if (norm(sheet.get(row, col)) === CLIENT_LABEL) starts.push({ row, col, raw: sheet.get(row, col + 1) });
     }
   }
-  return starts.map((s, i) => ({
-    name: s.name,
-    firstRow: s.row,
-    lastRow: i + 1 < starts.length ? starts[i + 1].row - 1 : sheet.maxRow,
-  }));
+  return starts.map((s, i) => {
+    const floor = i ? starts[i - 1].row + 1 : 1; // do not read into the previous client's own rows
+    let familyNumber = null, clientNumber = null;
+    for (let r = s.row - 1; r >= Math.max(floor, s.row - 5); r--) {
+      const fam = familyCol ? whole(sheet.get(r, familyCol)) : null;
+      const num = clientCol ? whole(sheet.get(r, clientCol)) : null;
+      if (fam !== null || num !== null) {
+        familyNumber = fam;
+        clientNumber = num;
+        break;
+      }
+    }
+    let name = s.raw !== undefined && s.raw !== "" ? stripLeadingNumber(s.raw) : "";
+    if (!name) name = `(unnamed, row ${s.row})`;
+    const hasNumbers = familyNumber !== null || clientNumber !== null;
+    return {
+      name: hasNumbers ? `${familyNumber ?? "?"} - ${clientNumber ?? "?"} - ${name}` : name,
+      plainName: name,
+      familyNumber,
+      clientNumber,
+      firstRow: s.row,
+      lastRow: i + 1 < starts.length ? starts[i + 1].row - 1 : sheet.maxRow,
+    };
+  });
 }
 
 /** Round half up to cents using the shortest decimal text of the number (matches Python's Decimal(str(x))). */
@@ -176,7 +223,11 @@ export function readClient(sheet, client, dateColumns, start = null, end = null)
   }
   const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0); // code-point order, like Python
   claims.sort((a, b) => byText(a.service_date, b.service_date) || byText(a.service, b.service));
-  return { client: client.name, rate, claims, problems, warnings };
+  return {
+    client: client.name, clientName: client.plainName ?? client.name,
+    familyNumber: client.familyNumber ?? null, clientNumber: client.clientNumber ?? null,
+    rate, claims, problems, warnings,
+  };
 }
 
 // Groups are fixed by day of the month, not by how many claims there are. Days with no claims
@@ -238,6 +289,9 @@ export function buildExport(result, groups, start, end, sourceFile, sheetTitle, 
     source_file: sourceFile,
     sheet: sheetTitle,
     client: result.client,
+    client_name: result.clientName ?? result.client,
+    family_number: result.familyNumber ?? null,
+    client_number: result.clientNumber ?? null,
     rate: result.rate,
     date_range: { start: start ? iso(start) : null, end: end ? iso(end) : null },
     max_claims_per_group: MAX_CLAIMS_PER_GROUP,

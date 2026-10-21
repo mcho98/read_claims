@@ -1,11 +1,14 @@
 {
   "format": "claimfiller-claims",
   "version": 2,
-  "generated_at": "2026-10-19T15:40:27-06:00",
+  "generated_at": "2026-10-21T15:01:21-06:00",
   "source_file": "mock_data.xlsx",
   "sheet": "Sheet1",
-  "client": "John Doe",
-  "rate": 34.03,
+  "client": "1 - 1 - John Doe",
+  "client_name": "John Doe",
+  "family_number": 1,
+  "client_number": 1,
+  "rate": 35.03,
   "date_range": {
     "start": null,
     "end": null
@@ -13,8 +16,8 @@
   "max_claims_per_group": 10,
   "totals": {
     "claims": 15,
-    "hours": 47.0,
-    "total_cost": 1599.42
+    "hours": 90,
+    "total_cost": 3152.7
   },
   "problems": [],
   "warnings": [],
@@ -28,72 +31,72 @@
         {
           "service_date": "2026-10-01",
           "service": "Personal Care",
-          "hours": 4,
-          "total_cost": 136.12,
+          "hours": 6,
+          "total_cost": 210.18,
           "cell": "E9"
         },
         {
           "service_date": "2026-10-02",
-          "service": "Homemaking",
-          "hours": 3,
-          "total_cost": 102.09,
-          "cell": "F8"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "F9"
         },
         {
           "service_date": "2026-10-03",
-          "service": "Respite",
-          "hours": 4,
-          "total_cost": 136.12,
-          "cell": "G10"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "G9"
         },
         {
           "service_date": "2026-10-04",
           "service": "Personal Care",
-          "hours": 3.5,
-          "total_cost": 119.11,
+          "hours": 6,
+          "total_cost": 210.18,
           "cell": "H9"
         },
         {
           "service_date": "2026-10-05",
-          "service": "Homemaking",
-          "hours": 2,
-          "total_cost": 68.06,
-          "cell": "I8"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "I9"
         },
         {
           "service_date": "2026-10-06",
           "service": "Personal Care",
-          "hours": 3.5,
-          "total_cost": 119.11,
+          "hours": 6,
+          "total_cost": 210.18,
           "cell": "J9"
         },
         {
           "service_date": "2026-10-07",
           "service": "Personal Care",
-          "hours": 4,
-          "total_cost": 136.12,
+          "hours": 6,
+          "total_cost": 210.18,
           "cell": "K9"
         },
         {
           "service_date": "2026-10-08",
           "service": "Personal Care",
-          "hours": 5,
-          "total_cost": 170.15,
+          "hours": 6,
+          "total_cost": 210.18,
           "cell": "L9"
         },
         {
           "service_date": "2026-10-09",
           "service": "Personal Care",
           "hours": 6,
-          "total_cost": 204.18,
+          "total_cost": 210.18,
           "cell": "M9"
         },
         {
           "service_date": "2026-10-10",
-          "service": "Homemaking",
-          "hours": 1,
-          "total_cost": 34.03,
-          "cell": "N8"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "N9"
         }
       ]
     },
@@ -105,38 +108,38 @@
       "claims": [
         {
           "service_date": "2026-10-11",
-          "service": "Homemaking",
-          "hours": 2,
-          "total_cost": 68.06,
-          "cell": "O8"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "O9"
         },
         {
           "service_date": "2026-10-12",
-          "service": "Homemaking",
-          "hours": 3,
-          "total_cost": 102.09,
-          "cell": "P8"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "P9"
         },
         {
           "service_date": "2026-10-13",
-          "service": "Respite",
-          "hours": 1,
-          "total_cost": 34.03,
-          "cell": "Q10"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "Q9"
         },
         {
           "service_date": "2026-10-14",
-          "service": "Respite",
-          "hours": 2,
-          "total_cost": 68.06,
-          "cell": "R10"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "R9"
         },
         {
           "service_date": "2026-10-15",
-          "service": "Respite",
-          "hours": 3,
-          "total_cost": 102.09,
-          "cell": "S10"
+          "service": "Personal Care",
+          "hours": 6,
+          "total_cost": 210.18,
+          "cell": "S9"
         }
       ]
     }
