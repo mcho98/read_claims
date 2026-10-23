@@ -157,9 +157,10 @@ def find_clients(ws):
     `name` is the text shown in menus: 'family number - client number - name', e.g. '4 - 5 - Albert
     Albertson', so joint clients of one family sit together and are easy to tell apart. The numbers
     sit in a row just above each 'Client Name' label (family number and client number under the
-    'Family Number' / 'Client Number' headers). The name is only ever the text right next to the
-    'Client Name' label, with its leading number removed ('1 John Doe' -> 'John Doe'); the cell
-    next to the client number is not read. Sheets without those headers show the name only.
+    'Family Number' / 'Client Number' headers, then the AHS ID next to them). The name is the text
+    in the cell directly under that AHS ID (it has no leading number); only when that cell is
+    empty (or there is no number row) it is the text next to the 'Client Name' label with its
+    leading number removed ('1 John Doe' -> 'John Doe'). Sheets without the headers show the name only.
     """
     family_col, client_col = find_number_columns(ws)
     starts = []
@@ -171,13 +172,20 @@ def find_clients(ws):
     for i, (label_row, label_col, raw_name) in enumerate(starts):
         floor = starts[i - 1][0] + 1 if i else 1  # do not read into the previous client's own rows
         family = number = None
+        number_row = None
         for r in range(label_row - 1, max(floor, label_row - 6) - 1, -1):
             fam = whole(ws.cell(r, family_col).value) if family_col else None
             num = whole(ws.cell(r, client_col).value) if client_col else None
             if fam is not None or num is not None:
-                family, number = fam, num
+                family, number, number_row = fam, num, r
                 break
-        name = strip_leading_number(raw_name) if raw_name not in (None, "") else ""
+        name = ""
+        if number_row is not None and client_col and number_row + 1 < label_row:
+            under_ahs = ws.cell(number_row + 1, client_col + 1).value  # directly under the AHS ID cell
+            if isinstance(under_ahs, str) and under_ahs.strip():
+                name = under_ahs.strip()
+        if not name and raw_name not in (None, ""):
+            name = strip_leading_number(raw_name)
         if not name:
             name = f"(unnamed, row {label_row})"
         label = name

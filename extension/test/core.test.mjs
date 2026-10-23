@@ -102,10 +102,11 @@ function fakeSheet(cells) {
   return { maxRow: 12, maxCol: 6, get: (r, c) => map.get(`${r}:${c}`) };
 }
 
-test("the name is only taken from next to 'Client Name' (leading number removed); the cell next to the client number is ignored", () => {
-  for (const next of [undefined, 123123, "Zed Zebra"]) {
-    const sheet = fakeSheet({ A2: "Family Number", B2: "Client Number", A3: 4, B3: 5, C3: next, B5: "Client Name", C5: "4 Albert Albertson" });
-    assert.equal(core.findClients(sheet)[0].name, "4 - 5 - Albert Albertson");
+test("name is the cell under the AHS ID when it has text; otherwise the Client Name cell without its leading number", () => {
+  const base = { A2: "Family Number", B2: "Client Number", A3: 4, B3: 5, C3: 234234, B5: "Client Name", C5: "4 Albert Albertson" };
+  assert.equal(core.findClients(fakeSheet({ ...base, C4: "Albert A. Albertson" }))[0].name, "4 - 5 - Albert A. Albertson");
+  for (const under of [undefined, "", "   "]) {
+    assert.equal(core.findClients(fakeSheet({ ...base, C4: under }))[0].name, "4 - 5 - Albert Albertson");
   }
 });
 

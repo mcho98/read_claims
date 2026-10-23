@@ -112,10 +112,11 @@ export const stripLeadingNumber = (text) => String(text).replace(/^\s*\d+[\s.:)-
  * [{name, plainName, familyNumber, clientNumber, firstRow, lastRow}], one per "Client Name" label.
  * `name` is what menus show: "family number - client number - name", e.g. "4 - 5 - Albert Albertson",
  * so joint clients of one family sit together and are easy to tell apart. The numbers sit in a row
- * just above each "Client Name" label, under the "Family Number" / "Client Number" headers. The
- * name is only ever the text right next to the "Client Name" label, with its leading number removed
- * ("1 John Doe" -> "John Doe"); the cell next to the client number is not read. Sheets without
- * those headers show the name only.
+ * just above each "Client Name" label, under the "Family Number" / "Client Number" headers, then
+ * the AHS ID next to them. The name is the text in the cell directly under that AHS ID (it has no
+ * leading number); only when that cell is empty (or there is no number row) it is the text next to
+ * the "Client Name" label with its leading number removed ("1 John Doe" -> "John Doe"). Sheets
+ * without the headers show the name only.
  */
 export function findClients(sheet) {
   const { family: familyCol, client: clientCol } = findNumberColumns(sheet);
@@ -127,17 +128,23 @@ export function findClients(sheet) {
   }
   return starts.map((s, i) => {
     const floor = i ? starts[i - 1].row + 1 : 1; // do not read into the previous client's own rows
-    let familyNumber = null, clientNumber = null;
+    let familyNumber = null, clientNumber = null, numberRow = null;
     for (let r = s.row - 1; r >= Math.max(floor, s.row - 5); r--) {
       const fam = familyCol ? whole(sheet.get(r, familyCol)) : null;
       const num = clientCol ? whole(sheet.get(r, clientCol)) : null;
       if (fam !== null || num !== null) {
         familyNumber = fam;
         clientNumber = num;
+        numberRow = r;
         break;
       }
     }
-    let name = s.raw !== undefined && s.raw !== "" ? stripLeadingNumber(s.raw) : "";
+    let name = "";
+    if (numberRow !== null && clientCol && numberRow + 1 < s.row) {
+      const underAhs = sheet.get(numberRow + 1, clientCol + 1); // directly under the AHS ID cell
+      if (typeof underAhs === "string" && underAhs.trim()) name = underAhs.trim();
+    }
+    if (!name && s.raw !== undefined && s.raw !== "") name = stripLeadingNumber(s.raw);
     if (!name) name = `(unnamed, row ${s.row})`;
     const hasNumbers = familyNumber !== null || clientNumber !== null;
     return {
