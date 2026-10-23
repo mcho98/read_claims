@@ -1,7 +1,7 @@
 name: Build Chrome extension
 on:
   push:
-    # Runs with every app release too (see the BUILD_EXTENSION switch below); ext-v* tags release the extension alone.
+    # Runs with every release tag (see the BUILD_EXTENSION switch below); ext-v* tags release the extension alone.
     tags: ["app-v*", "v*", "ext-v*"]
   workflow_dispatch:    # Actions tab > Run workflow
     inputs:

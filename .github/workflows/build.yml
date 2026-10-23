@@ -1,7 +1,10 @@
 name: Build ClaimFiller
+# PAUSED: the Windows/Mac app is not built on releases for now; only the extension zip is
+# (build-extension.yml). To switch it back on, uncomment the `push:` trigger below.
+# It can still be run by hand from the Actions tab (Run workflow).
 on:
-  push:
-    tags: ["app-v*", "v*"]   # pushing a tag builds and publishes a release (extension tags are ext-v*)
+  # push:
+  #   tags: ["app-v*", "v*"]   # pushing a tag builds and publishes a release (extension tags are ext-v*)
   workflow_dispatch:  # Actions tab > Run workflow
     inputs:
       tag:
