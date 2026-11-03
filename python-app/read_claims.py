@@ -201,6 +201,11 @@ def to_money(value):
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def money_product(hours, rate):
+    """hours x rate to the nearest cent, using exact decimal arithmetic (no float artifacts)."""
+    return to_money(Decimal(str(hours)) * Decimal(str(rate)))
+
+
 def parse_day(text):
     """Turn YYYYMMDD (or YYYY-MM-DD) into a date; blank means no limit. Raises ValueError."""
     text = (text or "").strip()
@@ -246,14 +251,19 @@ def read_client(ws, client, date_columns, start=None, end=None):
             if not isinstance(hours, (int, float)):
                 problems.append(f"{where}: hours is not a number ({hours!r}).")
                 continue
+            # Round to the nearest 2 decimals first: the rounded hours are what is shown, typed into
+            # the form and used for the cost, so the form, the preview and the check all agree.
+            hours = to_money(hours)
             if hours < 0 or hours > MAX_HOURS_PER_DAY:
-                problems.append(f"{where}: {hours} hours is outside 0-{MAX_HOURS_PER_DAY}.")
+                problems.append(f"{where}: {hours:g} hours is outside 0-{MAX_HOURS_PER_DAY}.")
+                continue
+            if hours == 0:  # e.g. 0.004 rounds to nothing
                 continue
             claims.append({
                 "service_date": day.strftime("%Y-%m-%d"),
                 "service": service,
                 "hours": hours,
-                "total_cost": to_money(hours * rate) if rate else None,
+                "total_cost": money_product(hours, rate) if rate else None,
                 "cell": where,
             })
     claims.sort(key=lambda c: (c["service_date"], c["service"]))

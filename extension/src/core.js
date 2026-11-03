@@ -170,6 +170,30 @@ export function toMoney(value) {
   return Number(`${sign}${text.slice(0, -2)}.${text.slice(-2)}`);
 }
 
+/** hours x rate to the nearest cent, with exact decimal arithmetic (no float artifacts); half rounds up. */
+export function moneyProduct(a, b) {
+  const scaled = (v) => {
+    const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(v));
+    return m ? { n: BigInt(m[1] + m[2] + (m[3] || "")), d: (m[3] || "").length } : null;
+  };
+  const x = scaled(a), y = scaled(b);
+  if (!x || !y) return toMoney(a * b); // exponent form etc.: not expected for money
+  let n = x.n * y.n; // value = n / 10^d
+  const d = x.d + y.d;
+  if (d <= 2) {
+    n *= 10n ** BigInt(2 - d);
+  } else {
+    const div = 10n ** BigInt(d - 2);
+    const abs = n < 0n ? -n : n;
+    let q = abs / div;
+    if ((abs % div) * 2n >= div) q += 1n;
+    n = n < 0n ? -q : q;
+  }
+  const sign = n < 0n ? "-" : "";
+  const text = (n < 0n ? -n : n).toString().padStart(3, "0");
+  return Number(`${sign}${text.slice(0, -2)}.${text.slice(-2)}`);
+}
+
 /** "20260815" or "2026-08-15" -> {y,m,d}; blank -> null; anything else throws. */
 export function parseDay(text) {
   const t = (text || "").trim();
@@ -208,22 +232,26 @@ export function readClient(sheet, client, dateColumns, start = null, end = null)
   for (const row of [...serviceRows.keys()].sort((a, b) => a - b)) {
     for (const { col, day } of dateColumns) {
       if ((start && cmpDay(day, start) < 0) || (end && cmpDay(day, end) > 0)) continue;
-      const hours = sheet.get(row, col);
+      let hours = sheet.get(row, col);
       if (hours === undefined || hours === "" || hours === 0) continue;
       const where = sheet.coordinate(row, col);
       if (typeof hours !== "number") {
         problems.push(`${where}: hours is not a number (${JSON.stringify(hours)}).`);
         continue;
       }
+      // Round to the nearest 2 decimals first: the rounded hours are what is shown, typed into the
+      // form and used for the cost, so the form, the preview and the check all agree.
+      hours = toMoney(hours);
       if (hours < 0 || hours > MAX_HOURS_PER_DAY) {
         problems.push(`${where}: ${hours} hours is outside 0-${MAX_HOURS_PER_DAY}.`);
         continue;
       }
+      if (hours === 0) continue; // e.g. 0.004 rounds to nothing
       claims.push({
         service_date: iso(day),
         service: serviceRows.get(row),
         hours,
-        total_cost: rate ? toMoney(hours * rate) : null,
+        total_cost: rate ? moneyProduct(hours, rate) : null,
         cell: where,
       });
     }

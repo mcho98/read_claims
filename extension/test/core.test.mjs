@@ -114,3 +114,25 @@ test("sheets without the number headers show the plain name", () => {
   const sheet = fakeSheet({ B5: "Client Name", C5: "3 Jane Roe" });
   assert.equal(core.findClients(sheet)[0].name, "Jane Roe");
 });
+
+test("money product is exact and rounds half up", () => {
+  assert.equal(core.moneyProduct(3.5, 35.03), 122.61); // 122.605 exactly; a float product would give 122.60
+  assert.equal(core.moneyProduct(1.23, 35.03), 43.09);
+  assert.equal(core.moneyProduct(4, 34.03), 136.12);
+  assert.equal(core.moneyProduct(0.01, 0.5), 0.01);
+});
+
+test("hours with many decimals are rounded to 2 before display, cost and form-fill", () => {
+  // E column = 2026-10-01..03; one service row with long decimals, a tiny value and a normal one
+  const cells = { B5: "Client Name", C5: "Test", C7: "rate $/hr", D7: 35.03, B9: "Personal Care hours", E9: 1.23456, F9: 0.004, G9: 3.335 };
+  const sheet = {
+    maxRow: 12, maxCol: 8,
+    get: (r, c) => cells[String.fromCharCode(64 + c) + r],
+    coordinate: (r, c) => String.fromCharCode(64 + c) + r,
+  };
+  const days = [1, 2, 3].map((d, i) => ({ col: 5 + i, day: { y: 2026, m: 10, d } }));
+  const r = core.readClient(sheet, { name: "Test", firstRow: 5, lastRow: 12 }, days);
+  assert.deepEqual(r.claims.map((c) => [c.service_date, c.hours, c.total_cost]),
+    [["2026-10-01", 1.23, 43.09], ["2026-10-03", 3.34, 117.0]]); // 0.004 rounds to 0 and is skipped; 3.34 x 35.03 = 117.0002
+  assert.deepEqual(r.problems, []);
+});
